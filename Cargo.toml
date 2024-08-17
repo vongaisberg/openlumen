@@ -1,0 +1,29 @@
+[package]
+name = "artnet_node"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-stm32 = { version = "0.1.0", features = ["defmt", "stm32f429zi", "unstable-pac", "memory-x", "time-driver-any", "exti", "chrono"] }
+embassy-executor = { version = "0.6.0", features = ["task-arena-size-32768", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "integrated-timers"] }
+embassy-time = { version = "0.3.2", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-net = { version = "0.4.0", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
+
+
+defmt = "0.3"
+defmt-rtt = "0.4"
+cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+embedded-io-async = { version = "0.6.1" }
+static_cell = "2.1.0"
+bitflags = "2.6.0"
+
+[patch.crates-io]
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "fdc34b69ffc292427f50f35209f095bb5a50bb82" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "fdc34b69ffc292427f50f35209f095bb5a50bb82" }
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "fdc34b69ffc292427f50f35209f095bb5a50bb82" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "fdc34b69ffc292427f50f35209f095bb5a50bb82" }
+
+[profile.release]
+debug = 2
