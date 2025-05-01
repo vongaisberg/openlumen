@@ -34,4 +34,20 @@ impl ArtDmx {
 
         Some(res)
     }
+    pub fn default() -> Self {
+        Self {
+            sequence: 0,
+            physical: 0,
+            sub_uni: 0,
+            net: 0,
+            length: 0,
+            data: {
+                let mut data = [0; 512];
+                data[0] = 0;
+                data[1] = 85;
+                data[7] = 85;
+                data
+            },
+        }
+    }
 }
