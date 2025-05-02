@@ -50,4 +50,8 @@ impl ArtDmx {
             },
         }
     }
+
+    pub fn universe(&self) -> u16 {
+        ((self.net as u16) << 8) | (self.sub_uni as u16)
+    }
 }

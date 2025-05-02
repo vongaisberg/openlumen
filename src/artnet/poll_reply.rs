@@ -2,6 +2,7 @@ use bitflags::bitflags;
 
 const ART_POLL_REPLY_OPCODE: u16 = 0x2100;
 
+pub const BUFFER_SIZE: usize = 240; // Standard ArtPollReply size
 pub struct PollReply {
     /// Array containing the Node’s IP address. First
     /// array entry is most significant byte of address.
