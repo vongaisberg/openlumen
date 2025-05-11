@@ -6,8 +6,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { SourceDevice } from "@shared/schema";
 import { useEffect, useState } from "react";
+import DmxChannelHeatmap from "./DmxChannelHeatmap";
 
 interface DMXPortProps {
   port: {
@@ -18,12 +20,14 @@ interface DMXPortProps {
     outputRate: string;
     packetsPerSecond: number;
     sourceDevices?: SourceDevice[];
+    channelValues?: number[];
   };
   onChange: (portNumber: number, field: string, value: any) => void;
 }
 
 export default function DMXPortCard({ port, onChange }: DMXPortProps) {
   const [blinkOn, setBlinkOn] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(false);
   const hasActivity = port.packetsPerSecond > 0;
 
   // Set up blinking animation
@@ -242,6 +246,37 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
           </div>
         )}
       </div>
+      
+      {/* DMX Channel Heatmap Toggle */}
+      {port.channelValues && port.channelValues.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium text-gray-700">
+              DMX Channel Heatmap
+            </h4>
+            <div className="flex items-center space-x-2">
+              <Switch 
+                id={`port${port.portNumber}_heatmap_toggle`}
+                checked={showHeatmap}
+                onCheckedChange={setShowHeatmap}
+              />
+              <Label 
+                htmlFor={`port${port.portNumber}_heatmap_toggle`}
+                className="text-sm text-gray-600"
+              >
+                {showHeatmap ? "Hide" : "Show"}
+              </Label>
+            </div>
+          </div>
+          
+          {showHeatmap && (
+            <DmxChannelHeatmap 
+              channelValues={port.channelValues}
+              portNumber={port.portNumber}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -153,7 +153,8 @@ export class MemStorage implements IStorage {
         packetsPerSecond: 40,
         sourceDevices: [
           { name: "Light Board", ip: "192.168.1.55", packetsPerSecond: 38 } as unknown as string
-        ] as any
+        ] as any,
+        channelValues: this.generateChannelValues(0.8) as unknown as string[]
       }
     ];
     
@@ -335,7 +336,7 @@ export class MemStorage implements IStorage {
     // Update packet loss (random fluctuation between 0-5%)
     this.systemInfo.packetLoss = Math.max(0, Math.min(5, this.systemInfo.packetLoss + (Math.random() > 0.7 ? 1 : -1)));
     
-    // Update active port packet rates
+    // Update active port packet rates and channel values
     this.dmxPorts.forEach(port => {
       if (port.mode !== "off") {
         const baseRate = port.mode === "on" ? 
@@ -363,6 +364,49 @@ export class MemStorage implements IStorage {
           // Ensure sum of source device packet rates is close to port's total
           if (totalDevicePackets > 0) {
             port.packetsPerSecond = totalDevicePackets;
+          }
+        }
+        
+        // Only update channel values every 5 seconds to avoid too much data transfer
+        // Use a 1 in 5 chance for any update
+        if (Math.random() < 0.2) {
+          // Update DMX channel values with some random changes
+          if (!port.channelValues) {
+            // Initialize channel values if not present
+            if (port.mode === "blackout") {
+              port.channelValues = this.generateChannelValues(0.5) as unknown as string[];
+            } else {
+              port.channelValues = this.generateChannelValues() as unknown as string[];
+            }
+          } else {
+            // Modify some random channels to simulate changes
+            const values = port.channelValues as unknown as number[];
+            
+            // Choose a few random channels to update
+            const numChannelsToUpdate = Math.floor(Math.random() * 10) + 5;
+            for (let i = 0; i < numChannelsToUpdate; i++) {
+              const channelIndex = Math.floor(Math.random() * 512);
+              
+              // Either tweak an existing value or set a new one
+              if (values[channelIndex] > 0) {
+                // Tweak existing value
+                values[channelIndex] = Math.max(0, Math.min(255, 
+                  values[channelIndex] + (Math.random() > 0.5 ? 10 : -10)));
+              } else if (Math.random() < 0.3) {
+                // Sometimes set a new value
+                values[channelIndex] = Math.floor(Math.random() * 255);
+              }
+            }
+            
+            port.channelValues = values as unknown as string[];
+          }
+        }
+      } else {
+        // For off ports, reset channelValues to all zeros if any change detected
+        if (port.channelValues) {
+          const values = port.channelValues as unknown as number[];
+          if (values.some(v => v > 0)) {
+            port.channelValues = new Array(512).fill(0) as unknown as string[];
           }
         }
       }
