@@ -7,9 +7,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import { SourceDevice } from "@shared/schema";
 import { useEffect, useState } from "react";
-import DmxChannelHeatmap from "./DmxChannelHeatmap";
+import DmxChannelViewer from "./DmxChannelViewer";
 
 interface DMXPortProps {
   port: {
@@ -27,7 +28,7 @@ interface DMXPortProps {
 
 export default function DMXPortCard({ port, onChange }: DMXPortProps) {
   const [blinkOn, setBlinkOn] = useState(true);
-  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const hasActivity = port.packetsPerSecond > 0;
 
   // Set up blinking animation
@@ -76,6 +77,43 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
       default:
         return "Unknown";
     }
+  };
+  
+  // Helper function to get a summary of active channels
+  const getActiveChannelsSummary = (channelValues: number[]) => {
+    // Count total active channels
+    const activeChannels = channelValues.filter(val => val > 0);
+    const totalActive = activeChannels.length;
+    
+    if (totalActive === 0) {
+      return "None (all channels at 0)";
+    }
+    
+    // Get top 5 active channels with their values
+    const topChannels: {channel: number, value: number}[] = [];
+    channelValues.forEach((val, index) => {
+      if (val > 0) {
+        topChannels.push({ channel: index + 1, value: val });
+      }
+    });
+    
+    // Sort by value (highest first) and take up to 5
+    topChannels.sort((a, b) => b.value - a.value);
+    const topFive = topChannels.slice(0, 5);
+    
+    return (
+      <>
+        {totalActive} channel{totalActive !== 1 ? 's' : ''} active. 
+        Top values: {' '}
+        {topFive.map((ch, idx) => (
+          <span key={ch.channel} className="whitespace-nowrap">
+            Ch {ch.channel} ({ch.value})
+            {idx < topFive.length - 1 ? ', ' : ''}
+          </span>
+        ))}
+        {totalActive > 5 ? ` and ${totalActive - 5} more...` : ''}
+      </>
+    );
   };
 
   return (
@@ -247,34 +285,36 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         )}
       </div>
       
-      {/* DMX Channel Heatmap Toggle */}
+      {/* DMX Channel Viewer */}
       {port.channelValues && port.channelValues.length > 0 && (
         <div className="mt-4 pt-4 border-t border-gray-200">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium text-gray-700">
-              DMX Channel Heatmap
+              DMX Channel Viewer
             </h4>
-            <div className="flex items-center space-x-2">
-              <Switch 
-                id={`port${port.portNumber}_heatmap_toggle`}
-                checked={showHeatmap}
-                onCheckedChange={setShowHeatmap}
-              />
-              <Label 
-                htmlFor={`port${port.portNumber}_heatmap_toggle`}
-                className="text-sm text-gray-600"
-              >
-                {showHeatmap ? "Hide" : "Show"}
-              </Label>
-            </div>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setViewerOpen(true)}
+              className="text-sm"
+            >
+              View All Channels
+            </Button>
           </div>
           
-          {showHeatmap && (
-            <DmxChannelHeatmap 
-              channelValues={port.channelValues}
-              portNumber={port.portNumber}
-            />
-          )}
+          {/* Full-screen Channel Viewer */}
+          <DmxChannelViewer 
+            open={viewerOpen}
+            onOpenChange={setViewerOpen}
+            channelValues={port.channelValues as unknown as number[]}
+            portNumber={port.portNumber}
+          />
+          
+          {/* Channel Summary (show a few active channels) */}
+          <div className="mt-3 text-xs text-gray-600">
+            <span className="font-medium">Active channels: </span>
+            {getActiveChannelsSummary(port.channelValues as unknown as number[])}
+          </div>
         </div>
       )}
     </div>
