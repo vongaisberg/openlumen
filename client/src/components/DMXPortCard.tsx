@@ -1,5 +1,6 @@
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SourceDevice } from "@shared/schema";
 
 interface DMXPortProps {
   port: {
@@ -9,6 +10,7 @@ interface DMXPortProps {
     mergeMode: string;
     outputRate: string;
     packetsPerSecond: number;
+    sourceDevices?: SourceDevice[];
   };
   onChange: (portNumber: number, field: string, value: any) => void;
 }
@@ -134,6 +136,32 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
             </SelectContent>
           </Select>
         </div>
+      </div>
+      
+      {/* Source Devices */}
+      <div className="mt-4 pt-4 border-t border-gray-200">
+        <h4 className="text-sm font-medium text-gray-700 mb-2">Source Devices</h4>
+        {port.sourceDevices && port.sourceDevices.length > 0 ? (
+          <div className="space-y-2">
+            {port.sourceDevices.slice(0, 2).map((device, i) => (
+              <div key={i} className="flex items-center">
+                <div className="flex-1 bg-white p-2 rounded border border-gray-200">
+                  <div className="flex justify-between">
+                    <span className="text-sm font-medium text-gray-800">{device.name}</span>
+                    <span className="text-sm text-gray-500">{device.ip}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-500 italic">No source devices</div>
+        )}
+        {port.sourceDevices && port.sourceDevices.length > 2 && (
+          <div className="mt-1 text-xs text-gray-500">
+            Note: Maximum 2 source devices shown. Additional devices may be connected.
+          </div>
+        )}
       </div>
     </div>
   );

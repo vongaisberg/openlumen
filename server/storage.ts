@@ -72,9 +72,9 @@ export class MemStorage implements IStorage {
         outputRate: "normal",
         packetsPerSecond: 44,
         sourceDevices: [
-          { name: "Console 1", ip: "192.168.1.50" },
-          { name: "Backup Console", ip: "192.168.1.51" }
-        ]
+          { name: "Console 1", ip: "192.168.1.50" } as unknown as string,
+          { name: "Backup Console", ip: "192.168.1.51" } as unknown as string
+        ] as any
       },
       {
         id: 2,
@@ -95,8 +95,8 @@ export class MemStorage implements IStorage {
         outputRate: "normal",
         packetsPerSecond: 30,
         sourceDevices: [
-          { name: "Media Server", ip: "192.168.1.60" }
-        ]
+          { name: "Media Server", ip: "192.168.1.60" } as unknown as string
+        ] as any
       },
       {
         id: 4,
@@ -107,8 +107,8 @@ export class MemStorage implements IStorage {
         outputRate: "fast",
         packetsPerSecond: 40,
         sourceDevices: [
-          { name: "Light Board", ip: "192.168.1.55" }
-        ]
+          { name: "Light Board", ip: "192.168.1.55" } as unknown as string
+        ] as any
       }
     ];
     

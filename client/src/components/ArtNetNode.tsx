@@ -90,7 +90,8 @@ export default function ArtNetNode() {
       <StatusBar 
         systemStatus={systemStatus} 
         lastUpdated={lastUpdated}
-        artnetTraffic={data?.systemInfo?.artnetTraffic || 0} 
+        artnetTraffic={data?.systemInfo?.artnetTraffic || 0}
+        packetLoss={data?.systemInfo?.packetLoss || 0}
         memoryUsage={data?.systemInfo?.memoryUsage || 0}
       />
     </div>
