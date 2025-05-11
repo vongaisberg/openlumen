@@ -36,6 +36,7 @@ export const insertArtnetConfigSchema = createInsertSchema(artnetConfig).omit({
 export interface SourceDevice {
   name: string;
   ip: string;
+  packetsPerSecond?: number;
 }
 
 // DMX Port Configuration Schema

@@ -1,6 +1,7 @@
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SourceDevice } from "@shared/schema";
+import { useEffect, useState } from "react";
 
 interface DMXPortProps {
   port: {
@@ -16,22 +17,45 @@ interface DMXPortProps {
 }
 
 export default function DMXPortCard({ port, onChange }: DMXPortProps) {
+  const [blinkOn, setBlinkOn] = useState(true);
+  const hasActivity = port.packetsPerSecond > 0;
+
+  // Set up blinking animation
+  useEffect(() => {
+    if (!hasActivity) return;
+    
+    const interval = setInterval(() => {
+      setBlinkOn(prev => !prev);
+    }, 800); // Blink every 800ms
+    
+    return () => clearInterval(interval);
+  }, [hasActivity]);
+  
   // Determine status indicator color based on mode
   const getStatusColor = (mode: string) => {
-    switch (mode) {
-      case "on": return "bg-[#10B981]"; // status-on
-      case "off": return "bg-[#6B7280]"; // status-off
-      case "blackout": return "bg-[#F59E0B]"; // status-blackout
-      default: return "bg-gray-400";
+    if (mode === "off") return "bg-[#6B7280]"; // status-off
+
+    // For on or blackout modes with activity, handle blinking
+    if (hasActivity) {
+      if (blinkOn) {
+        return mode === "on" ? "bg-[#10B981]" : "bg-[#F59E0B]"; // lit
+      } else {
+        return "bg-opacity-30 " + (mode === "on" ? "bg-[#10B981]" : "bg-[#F59E0B]"); // dimmed
+      }
     }
+    
+    // Default colors for non-blinking state
+    return mode === "on" ? "bg-[#10B981]" : 
+           mode === "blackout" ? "bg-[#F59E0B]" : 
+           "bg-gray-400";
   };
 
   // Determine status text based on mode
   const getStatusText = (mode: string) => {
     switch (mode) {
-      case "on": return "Active";
+      case "on": return hasActivity ? "Active" : "On";
       case "off": return "Off";
-      case "blackout": return "Blackout";
+      case "blackout": return hasActivity ? "Blackout (Active)" : "Blackout";
       default: return "Unknown";
     }
   };
@@ -45,12 +69,12 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         
         <div className="flex items-center">
           <div className="flex items-center mr-4">
-            <div className={`h-3 w-3 rounded-full ${getStatusColor(port.mode)} mr-2`}></div>
+            <div className={`h-3 w-3 rounded-full ${getStatusColor(port.mode)} mr-2 transition-all duration-300`}></div>
             <span className="text-sm font-medium text-gray-600">{getStatusText(port.mode)}</span>
           </div>
           
           <div className="flex items-center">
-            <span className="text-sm text-gray-500 mr-2">Packets/s:</span>
+            <span className="text-sm text-gray-500 mr-2">Total Packets/s:</span>
             <span className="text-sm font-medium text-gray-800">{port.packetsPerSecond}</span>
           </div>
         </div>
@@ -112,6 +136,7 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
             <SelectContent>
               <SelectItem value="htp">HTP (Highest Takes Precedence)</SelectItem>
               <SelectItem value="ltp">LTP (Latest Takes Precedence)</SelectItem>
+              <SelectItem value="dmx512">DMX512 (Last Sender Wins)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -146,9 +171,16 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
             {port.sourceDevices.slice(0, 2).map((device, i) => (
               <div key={i} className="flex items-center">
                 <div className="flex-1 bg-white p-2 rounded border border-gray-200">
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-center">
                     <span className="text-sm font-medium text-gray-800">{device.name}</span>
-                    <span className="text-sm text-gray-500">{device.ip}</span>
+                    <div className="flex items-center gap-3">
+                      {device.packetsPerSecond !== undefined && (
+                        <span className="text-xs px-2 py-1 bg-gray-100 rounded-full text-gray-700">
+                          {device.packetsPerSecond} pkt/s
+                        </span>
+                      )}
+                      <span className="text-sm text-gray-500">{device.ip}</span>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -72,8 +72,8 @@ export class MemStorage implements IStorage {
         outputRate: "normal",
         packetsPerSecond: 44,
         sourceDevices: [
-          { name: "Console 1", ip: "192.168.1.50" } as unknown as string,
-          { name: "Backup Console", ip: "192.168.1.51" } as unknown as string
+          { name: "Console 1", ip: "192.168.1.50", packetsPerSecond: 26 } as unknown as string,
+          { name: "Backup Console", ip: "192.168.1.51", packetsPerSecond: 18 } as unknown as string
         ] as any
       },
       {
@@ -95,7 +95,7 @@ export class MemStorage implements IStorage {
         outputRate: "normal",
         packetsPerSecond: 30,
         sourceDevices: [
-          { name: "Media Server", ip: "192.168.1.60" } as unknown as string
+          { name: "Media Server", ip: "192.168.1.60", packetsPerSecond: 30 } as unknown as string
         ] as any
       },
       {
@@ -107,7 +107,7 @@ export class MemStorage implements IStorage {
         outputRate: "fast",
         packetsPerSecond: 40,
         sourceDevices: [
-          { name: "Light Board", ip: "192.168.1.55" } as unknown as string
+          { name: "Light Board", ip: "192.168.1.55", packetsPerSecond: 38 } as unknown as string
         ] as any
       }
     ];
@@ -301,6 +301,25 @@ export class MemStorage implements IStorage {
         
         // Add random fluctuation
         port.packetsPerSecond = Math.max(0, Math.min(60, baseRate + (Math.random() > 0.5 ? 1 : -1)));
+        
+        // Update source device packet rates too
+        if (port.sourceDevices && port.sourceDevices.length > 0) {
+          let totalDevicePackets = 0;
+          
+          // Update each source device's packet rate with random fluctuations
+          (port.sourceDevices as any[]).forEach((device: any) => {
+            if (device.packetsPerSecond) {
+              const deviceBaseRate = device.packetsPerSecond;
+              device.packetsPerSecond = Math.max(0, Math.min(45, deviceBaseRate + (Math.random() > 0.5 ? 1 : -1)));
+              totalDevicePackets += device.packetsPerSecond;
+            }
+          });
+          
+          // Ensure sum of source device packet rates is close to port's total
+          if (totalDevicePackets > 0) {
+            port.packetsPerSecond = totalDevicePackets;
+          }
+        }
       }
     });
   }

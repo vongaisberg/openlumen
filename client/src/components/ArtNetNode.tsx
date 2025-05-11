@@ -10,14 +10,14 @@ import StatusBar from "./StatusBar";
 import useWebSocket from "@/hooks/useWebSocket";
 
 const tabs = [
+  { id: "dmx", label: "DMX Ports", component: DmxPorts },
   { id: "network", label: "Network Settings", component: NetworkSettings },
   { id: "artnet", label: "ArtNet Configuration", component: ArtNetSettings },
-  { id: "dmx", label: "DMX Ports", component: DmxPorts },
   { id: "system", label: "System", component: SystemInfo },
 ];
 
 export default function ArtNetNode() {
-  const [activeTab, setActiveTab] = useState<string>("network");
+  const [activeTab, setActiveTab] = useState<string>("dmx");
   const { toast } = useToast();
   
   const { 
@@ -47,11 +47,16 @@ export default function ArtNetNode() {
             <h1 className="text-2xl font-bold text-gray-800">ArtNet Node Controller</h1>
             <ConnectionStatus connected={connected} />
           </div>
-          <div className="flex items-center">
-            <span className="text-sm text-gray-600 mr-2">Device ID:</span>
-            <span className="text-sm font-medium text-gray-800">
-              {data?.systemInfo?.deviceId || "AN-2040"}
-            </span>
+          <div className="flex flex-col items-end">
+            <div className="flex items-center">
+              <span className="text-sm text-gray-600 mr-2">Device ID:</span>
+              <span className="text-sm font-medium text-gray-800">
+                {data?.systemInfo?.deviceId || "AN-2040"}
+              </span>
+            </div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {data?.artnetConfig?.deviceName || "ArtNet Node"}
+            </div>
           </div>
         </div>
       </header>
