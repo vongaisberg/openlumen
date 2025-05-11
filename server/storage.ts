@@ -39,6 +39,48 @@ export class MemStorage implements IStorage {
   private artnetConfig: ArtnetConfig;
   private dmxPorts: DmxPortConfig[];
   private systemInfo: SystemInfo;
+  
+  // Helper to generate sample DMX channel values
+  private generateChannelValues(intensity: number = 1): number[] {
+    const values = new Array(512).fill(0);
+    
+    // Generate some realistic lighting fixture patterns
+    // Fixture 1: RGB fixture (Channels 1-3)
+    values[0] = Math.floor(Math.random() * 255 * intensity); // Red
+    values[1] = Math.floor(Math.random() * 255 * intensity); // Green
+    values[2] = Math.floor(Math.random() * 255 * intensity); // Blue
+    
+    // Fixture 2: Moving head (Channels 10-17)
+    values[9] = Math.floor(200 * intensity); // Dimmer
+    values[10] = Math.floor(Math.random() * 255); // Pan
+    values[11] = Math.floor(Math.random() * 255); // Tilt
+    values[12] = 255; // Shutter (open)
+    values[13] = Math.floor(Math.random() * 255 * intensity); // Color wheel
+    values[14] = Math.floor(Math.random() * 255 * intensity); // Gobo wheel
+    
+    // Fixture 3: LED Bar (Channels 20-31)
+    for (let i = 19; i < 31; i++) {
+      values[i] = Math.floor(Math.random() * 255 * intensity);
+    }
+    
+    // Fixture 4: Theater spots (Channels 50-65)
+    for (let i = 49; i < 65; i++) {
+      values[i] = i % 2 === 0 ? Math.floor(200 * intensity) : 0;
+    }
+    
+    // Fixture 5: Fogger (Channel 100)
+    values[99] = Math.random() > 0.9 ? 255 : 0;
+    
+    // Fixture 6: Strobe (Channel 110)
+    values[109] = Math.random() > 0.8 ? 255 * intensity : 0;
+    
+    // Fixture 7: Par cans (Channels 200-215)
+    for (let i = 199; i < 215; i++) {
+      values[i] = Math.floor(Math.random() * 255 * intensity);
+    }
+    
+    return values;
+  }
 
   constructor() {
     // Initialize with default values
@@ -74,7 +116,8 @@ export class MemStorage implements IStorage {
         sourceDevices: [
           { name: "Console 1", ip: "192.168.1.50", packetsPerSecond: 26 } as unknown as string,
           { name: "Backup Console", ip: "192.168.1.51", packetsPerSecond: 18 } as unknown as string
-        ] as any
+        ] as any,
+        channelValues: this.generateChannelValues() as unknown as string[]
       },
       {
         id: 2,
@@ -84,7 +127,8 @@ export class MemStorage implements IStorage {
         mergeMode: "htp",
         outputRate: "normal",
         packetsPerSecond: 0,
-        sourceDevices: []
+        sourceDevices: [] as any,
+        channelValues: new Array(512).fill(0) as unknown as string[]
       },
       {
         id: 3,
@@ -96,7 +140,8 @@ export class MemStorage implements IStorage {
         packetsPerSecond: 30,
         sourceDevices: [
           { name: "Media Server", ip: "192.168.1.60", packetsPerSecond: 30 } as unknown as string
-        ] as any
+        ] as any,
+        channelValues: this.generateChannelValues(0.5) as unknown as string[]
       },
       {
         id: 4,

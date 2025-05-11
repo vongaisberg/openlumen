@@ -49,6 +49,7 @@ export const dmxPortConfig = pgTable("dmx_port_config", {
   outputRate: text("output_rate").notNull().default("normal"), // 'slow', 'normal', 'fast', 'max'
   packetsPerSecond: integer("packets_per_second").notNull().default(0),
   sourceDevices: text("source_devices").array(), // Array of source devices sending to this port (stored as JSON strings)
+  channelValues: text("channel_values").array(), // Array of DMX channel values (0-255) for 512 channels
 });
 
 export const insertDmxPortConfigSchema = createInsertSchema(dmxPortConfig).omit({
@@ -85,6 +86,7 @@ export type InsertArtnetConfig = z.infer<typeof insertArtnetConfigSchema>;
 
 export type DmxPortConfig = typeof dmxPortConfig.$inferSelect & {
   sourceDevices: SourceDevice[];
+  channelValues?: number[]; // Cast from string[] to number[] for easier use
 };
 export type InsertDmxPortConfig = z.infer<typeof insertDmxPortConfigSchema>;
 
