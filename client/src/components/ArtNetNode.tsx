@@ -42,20 +42,25 @@ export default function ArtNetNode() {
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
           <div className="flex items-center">
-            <h1 className="text-2xl font-bold text-gray-800">ArtNet Node Controller</h1>
+            <h1 className="text-2xl font-bold text-gray-800">ArtNet Node</h1>
             <ConnectionStatus connected={connected} />
           </div>
-          <div className="flex flex-col items-end">
-            <div className="flex items-center">
-              <span className="text-sm text-gray-600 mr-2">Device ID:</span>
-              <span className="text-sm font-medium text-gray-800">
-                {data?.systemInfo?.deviceId || "AN-2040"}
-              </span>
-            </div>
-            <div className="text-xs text-gray-500 mt-0.5">
-              {data?.artnetConfig?.deviceName || "ArtNet Node"}
+          <div className="flex flex-col sm:items-end w-full sm:w-auto">
+            <div className="flex items-start sm:items-center flex-col sm:flex-row sm:gap-4">
+              <div className="flex items-center">
+                <span className="text-sm text-gray-600 mr-2">Device ID:</span>
+                <span className="text-sm font-medium text-gray-800">
+                  {data?.systemInfo?.deviceId || "AN-2040"}
+                </span>
+              </div>
+              <div className="flex items-center mt-1 sm:mt-0">
+                <span className="text-sm text-gray-600 mr-2">Device Name:</span>
+                <span className="text-sm font-medium text-gray-800">
+                  {data?.artnetConfig?.deviceName || "ArtNet Node"}
+                </span>
+              </div>
             </div>
           </div>
         </div>
