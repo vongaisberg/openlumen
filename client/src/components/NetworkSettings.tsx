@@ -85,38 +85,48 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
             </RadioGroup>
           </div>
           
-          {/* Static IP Settings */}
-          {isStatic && (
-            <div className="space-y-4">
-              {/* IP Address */}
-              <div>
-                <Label htmlFor="ipAddress" className="block text-sm font-medium text-gray-700">IP Address</Label>
-                <Input
-                  id="ipAddress"
-                  placeholder="192.168.1.100"
-                  className={`mt-1 ${errors.ipAddress ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
-                  {...register("ipAddress")}
-                />
-                {errors.ipAddress && (
-                  <p className="mt-1 text-sm text-red-600">{errors.ipAddress.message as string}</p>
+          {/* IP Settings section - shown for both DHCP and static */}
+          <div className="space-y-4">
+            {/* IP Address */}
+            <div>
+              <Label htmlFor="ipAddress" className="flex items-center text-sm font-medium text-gray-700">
+                {isStatic ? "IP Address" : "Fallback IP Address"}
+                {!isStatic && (
+                  <span className="ml-2 text-xs text-gray-500">(Used when DHCP server is unavailable)</span>
                 )}
-              </div>
-              
-              {/* Subnet Mask */}
-              <div>
-                <Label htmlFor="subnetMask" className="block text-sm font-medium text-gray-700">Subnet Mask</Label>
-                <Input
-                  id="subnetMask"
-                  placeholder="255.255.255.0"
-                  className={`mt-1 ${errors.subnetMask ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
-                  {...register("subnetMask")}
-                />
-                {errors.subnetMask && (
-                  <p className="mt-1 text-sm text-red-600">{errors.subnetMask.message as string}</p>
+              </Label>
+              <Input
+                id="ipAddress"
+                placeholder="192.168.1.100"
+                className={`mt-1 ${errors.ipAddress ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
+                {...register("ipAddress")}
+              />
+              {errors.ipAddress && (
+                <p className="mt-1 text-sm text-red-600">{errors.ipAddress.message as string}</p>
+              )}
+            </div>
+            
+            {/* Subnet Mask */}
+            <div>
+              <Label htmlFor="subnetMask" className="flex items-center text-sm font-medium text-gray-700">
+                {isStatic ? "Subnet Mask" : "Fallback Subnet Mask"}
+                {!isStatic && (
+                  <span className="ml-2 text-xs text-gray-500">(Used when DHCP server is unavailable)</span>
                 )}
-              </div>
-              
-              {/* Gateway */}
+              </Label>
+              <Input
+                id="subnetMask"
+                placeholder="255.255.255.0"
+                className={`mt-1 ${errors.subnetMask ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
+                {...register("subnetMask")}
+              />
+              {errors.subnetMask && (
+                <p className="mt-1 text-sm text-red-600">{errors.subnetMask.message as string}</p>
+              )}
+            </div>
+            
+            {/* Gateway - only shown for static IP */}
+            {isStatic && (
               <div>
                 <Label htmlFor="gateway" className="block text-sm font-medium text-gray-700">Gateway</Label>
                 <Input
@@ -129,8 +139,8 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
                   <p className="mt-1 text-sm text-red-600">{errors.gateway.message as string}</p>
                 )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
           
           {/* Current Network Info */}
           <div className="pt-4 border-t border-gray-200">

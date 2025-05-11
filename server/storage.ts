@@ -70,7 +70,11 @@ export class MemStorage implements IStorage {
         universe: 0,
         mergeMode: "htp",
         outputRate: "normal",
-        packetsPerSecond: 44
+        packetsPerSecond: 44,
+        sourceDevices: [
+          { name: "Console 1", ip: "192.168.1.50" },
+          { name: "Backup Console", ip: "192.168.1.51" }
+        ]
       },
       {
         id: 2,
@@ -79,7 +83,8 @@ export class MemStorage implements IStorage {
         universe: 1,
         mergeMode: "htp",
         outputRate: "normal",
-        packetsPerSecond: 0
+        packetsPerSecond: 0,
+        sourceDevices: []
       },
       {
         id: 3,
@@ -88,7 +93,10 @@ export class MemStorage implements IStorage {
         universe: 2,
         mergeMode: "ltp",
         outputRate: "normal",
-        packetsPerSecond: 30
+        packetsPerSecond: 30,
+        sourceDevices: [
+          { name: "Media Server", ip: "192.168.1.60" }
+        ]
       },
       {
         id: 4,
@@ -97,7 +105,10 @@ export class MemStorage implements IStorage {
         universe: 3,
         mergeMode: "htp",
         outputRate: "fast",
-        packetsPerSecond: 40
+        packetsPerSecond: 40,
+        sourceDevices: [
+          { name: "Light Board", ip: "192.168.1.55" }
+        ]
       }
     ];
     
@@ -110,6 +121,7 @@ export class MemStorage implements IStorage {
       memoryUsage: 38,
       cpuLoad: 22,
       artnetTraffic: 92,
+      packetLoss: 2, // 2% packet loss
       systemStatus: "Running",
       deviceId: "AN-2040",
       currentFirmwareVersion: "v2.4.0",
@@ -274,6 +286,9 @@ export class MemStorage implements IStorage {
     
     // Update ArtNet traffic (random fluctuation)
     this.systemInfo.artnetTraffic = Math.max(60, Math.min(120, this.systemInfo.artnetTraffic + (Math.random() > 0.5 ? 2 : -2)));
+    
+    // Update packet loss (random fluctuation between 0-5%)
+    this.systemInfo.packetLoss = Math.max(0, Math.min(5, this.systemInfo.packetLoss + (Math.random() > 0.7 ? 1 : -1)));
     
     // Update active port packet rates
     this.dmxPorts.forEach(port => {
