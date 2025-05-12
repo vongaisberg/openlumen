@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SystemInfo",
+  "type": "object",
+  "required": [
+    "firmwareVersion",
+    "hardwareVersion",
+    "uptime",
+    "temperature",
+    "memoryUsage",
+    "cpuLoad",
+    "artnetTraffic",
+    "deviceId",
+    "currentFirmwareVersion",
+    "latestFirmwareVersion"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "description": "Primary key"
+    },
+    "firmwareVersion": {
+      "type": "string",
+      "description": "Firmware version"
+    },
+    "hardwareVersion": {
+      "type": "string",
+      "description": "Hardware version"
+    },
+    "uptime": {
+      "type": "string",
+      "description": "System uptime"
+    },
+    "temperature": {
+      "type": "string",
+      "description": "System temperature"
+    },
+    "memoryUsage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Memory usage percentage"
+    },
+    "cpuLoad": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "CPU load percentage"
+    },
+    "artnetTraffic": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "ArtNet traffic in packets per second"
+    },
+    "packetLoss": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 0,
+      "description": "Packet loss percentage"
+    },
+    "systemStatus": {
+      "type": "string",
+      "enum": ["Running", "Error", "Updating", "Rebooting"],
+      "default": "Running",
+      "description": "Current system status"
+    },
+    "deviceId": {
+      "type": "string",
+      "description": "Unique device identifier"
+    },
+    "currentFirmwareVersion": {
+      "type": "string",
+      "description": "Currently installed firmware version"
+    },
+    "latestFirmwareVersion": {
+      "type": "string",
+      "description": "Latest available firmware version"
+    }
+  }
+} 

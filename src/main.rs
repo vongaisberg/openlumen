@@ -167,9 +167,9 @@ async fn main(spawner: Spawner) -> ! {
     let config = make_static!(
         picoserve::Config::<Duration>,
         picoserve::Config::new(picoserve::Timeouts {
-            start_read_request: Some(Duration::from_secs(5)),
-            read_request: Some(Duration::from_secs(1)),
-            write: Some(Duration::from_secs(1)),
+            start_read_request: Some(Duration::from_secs(1)),
+            read_request: Some(Duration::from_millis(500)),
+            write: Some(Duration::from_millis(500)),
         })
         .keep_connection_alive()
     );

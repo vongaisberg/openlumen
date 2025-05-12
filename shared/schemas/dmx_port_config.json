@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DmxPortConfig",
+  "type": "object",
+  "required": ["portNumber", "mode", "universe", "mergeMode", "outputRate"],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "description": "Primary key"
+    },
+    "portNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4,
+      "description": "DMX port number (1-4)"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["on", "off", "blackout"],
+      "default": "on",
+      "description": "Port operation mode"
+    },
+    "universe": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15,
+      "default": 0,
+      "description": "DMX universe number (0-15)"
+    },
+    "mergeMode": {
+      "type": "string",
+      "enum": ["htp", "ltp"],
+      "default": "htp",
+      "description": "DMX merge mode (Highest Takes Precedence or Latest Takes Precedence)"
+    },
+    "outputRate": {
+      "type": "string",
+      "enum": ["slow", "normal", "fast", "max"],
+      "default": "normal",
+      "description": "DMX output rate"
+    },
+    "packetsPerSecond": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of DMX packets processed per second"
+    },
+    "sourceDevices": {
+      "type": "array",
+      "items": {
+        "$ref": "source_device.json"
+      },
+      "description": "Array of source devices sending to this port"
+    },
+    "channelValues": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      },
+      "minItems": 512,
+      "maxItems": 512,
+      "description": "Array of DMX channel values (0-255) for 512 channels"
+    }
+  }
+} 

@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ArtnetConfig",
+  "type": "object",
+  "required": ["net", "subnet", "deviceName", "protocolVersion"],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "description": "Primary key"
+    },
+    "net": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 127,
+      "default": 0,
+      "description": "ArtNet net number (0-127)"
+    },
+    "subnet": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 15,
+      "default": 0,
+      "description": "ArtNet subnet number (0-15)"
+    },
+    "deviceName": {
+      "type": "string",
+      "default": "ArtNet Node",
+      "description": "Name of the ArtNet device"
+    },
+    "protocolVersion": {
+      "type": "string",
+      "enum": ["ArtNet 3", "ArtNet 4"],
+      "default": "ArtNet 3",
+      "description": "ArtNet protocol version"
+    }
+  }
+} 
