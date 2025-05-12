@@ -1,34 +1,36 @@
 #![no_std]
 #![no_main]
+#![feature(impl_trait_in_assoc_type)]
 
 mod artnet;
-mod dmx_task;
 mod artnet_task;
+mod dmx_task;
+mod web_task;
 
-use artnet::dmx::ArtDmx;
-use artnet::poll_reply::*;
-use artnet::{OPCODE_DMX, OPCODE_POLL};
+use artnet::dmx;
+use artnet_task::artnet_task;
 use defmt::*;
+use dmx_task::send_dmx;
 use embassy_executor::Spawner;
-use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_stm32::eth::GenericPhy;
 use embassy_stm32::eth::{Ethernet, PacketQueue};
 use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::mode::{Async, Blocking}; // Import Blocking mode
+use embassy_stm32::mode::Async; // Import Blocking mode
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usart::{self, Config as Uart_Config, UartTx};
 use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config}; // Removed unused 'interrupt'
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
-use artnet_task::artnet_task;
-use dmx_task::send_dmx;
+use embassy_time::{Duration, Timer};
 use heapless::Vec;
+use picoserve::{make_static, AppBuilder, AppRouter};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
+use web_task::*;
 
 bind_interrupts!(struct Irqs {
     ETH => eth::InterruptHandler;
@@ -38,23 +40,11 @@ bind_interrupts!(struct Irqs {
 
 type Device = Ethernet<'static, ETH, GenericPhy>;
 
-// Static signal to share DMX data between tasks
-// We use NoopRawMutex because we are updating the whole array at once,
-// and reads only happen after a signal, ensuring data consistency.
-static DMX_DATA_SIGNAL: StaticCell<Signal<NoopRawMutex, [u8; 512]>> = StaticCell::new();
-
-static mut DMX_BUFFER: [[u8; 513]; 4] = [[0u8; 513]; 4]; // Global mutable buffer for DMX data
-
-static mut DMX_UARTS: [Option<UartTx<'static, Async>>; 4] = [const { None }; 4]; // Array of UART instances
-static mut DMX_UART_ENABLE: Option<Output<'static>> = None; // Array of UART enable pins
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
     // Added mut
     runner.run().await
 }
-
-
-
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -152,48 +142,55 @@ async fn main(spawner: Spawner) -> ! {
                                                     // Use the correct constructor for blocking UART Tx
     let dmx_uart1 = UartTx::new(p.UART5, p.PC12, p.DMA1_CH7, uart_config.clone()).unwrap();
     let dmx_uart2 = UartTx::new(p.UART4, p.PA0, p.DMA1_CH4, uart_config.clone()).unwrap();
-    let dmx_enable_pin = Output::new(p.PC11, Level::Low, Speed::High); // DMX driver enable, start low (disabled)
+    let dmx_enable = Output::new(p.PC11, Level::Low, Speed::High); // DMX driver enable, start low (disabled)
     let dmx_uart3 = UartTx::new(p.UART7, p.PF7, p.DMA1_CH1, uart_config.clone()).unwrap();
     let dmx_uart4 = UartTx::new(p.UART8, p.PE1, p.DMA1_CH0, uart_config).unwrap();
 
-    unsafe {
-        DMX_UART_ENABLE = Some(dmx_enable_pin); // Store the enable pin in the static array
-        DMX_UARTS[0] = Some(dmx_uart1); // Store the UART instance in the static array
-        DMX_UARTS[1] = Some(dmx_uart2); // Store the UART instance in the static array
-        DMX_UARTS[2] = Some(dmx_uart3); // Store the UART instance in the static array
-        DMX_UARTS[3] = Some(dmx_uart4); // Store the UART instance in the static array
-    }
+    let dmx_uarts: [UartTx<'static, Async>; 4] = [dmx_uart1, dmx_uart2, dmx_uart3, dmx_uart4]; // Array of UART instances
+
     info!("DMX UART initialized");
 
-    // Initialize the Signal for DMX data
-    let dmx_signal = DMX_DATA_SIGNAL.init(Signal::new());
-    info!("DMX Signal initialized");
+    // Initialize the shared Data
+    static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; 513]; 4]> = Mutex::new([[0u8; 513]; 4]); // Global mutable buffer for DMX data
 
     // Spawn ArtNet task
-    //
-    unwrap!(spawner.spawn(artnet_task(stack_ref, mac_addr, dmx_signal))); // Correct call
+    unwrap!(spawner.spawn(artnet_task(stack_ref, mac_addr, &DMX_BUFFER))); // Correct call
     info!("ArtNet task spawned");
 
-    unwrap!(spawner.spawn(send_dmx())); // Spawn DMX sending task
+    // Spawn DMX sending task
+    unwrap!(spawner.spawn(send_dmx(&DMX_BUFFER, dmx_uarts, dmx_enable))); // Correct call
     info!("DMX sending task spawned");
 
-    info!("All tasks initialized and running.");
+    // Spawn web task
+    let app = make_static!(AppRouter<Webinterface>, Webinterface.build_app());
+//
+    let config = make_static!(
+        picoserve::Config::<Duration>,
+        picoserve::Config::new(picoserve::Timeouts {
+            start_read_request: Some(Duration::from_secs(5)),
+            read_request: Some(Duration::from_secs(1)),
+            write: Some(Duration::from_secs(1)),
+        })
+        .keep_connection_alive()
+    );
 
-    let start_time = 0;
-    let mut count = 0;
+    for id in 0..2 {
+        spawner.must_spawn(web_task(id, stack, app, config));
+    }
+
+    info!("All tasks initialized and running.");
 
     // Main task can idle or perform low-priority background duties
     loop {
         // Example: Print status periodically
         Timer::after(Duration::from_millis(5000)).await;
-        // send_dmx().await; // Call send_dmx to send DMX data
 
         if let Some(config) = stack_ref.config_v4() {
             debug!("Heartbeat - IP: {}", config.address);
-            unsafe {
+            
                 // Notify DMX task about new data
-                debug!("DMX data: {:?}", &DMX_BUFFER[0]);
-            }
+                debug!("DMX data: {:?}", &DMX_BUFFER.lock().await[0]);
+            
         } else {
             debug!("Heartbeat - No IP");
         }

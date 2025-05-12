@@ -1,4 +1,3 @@
-use core::error::Error;
 
 use bitflags::bitflags;
 

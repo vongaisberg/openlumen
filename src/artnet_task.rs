@@ -1,38 +1,24 @@
-
-use crate::artnet::poll_reply::PollReply;
 use crate::artnet::dmx::ArtDmx;
+use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
-use crate::DMX_BUFFER;
 use defmt::*;
-use embassy_executor::Spawner;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
-use embassy_stm32::eth::GenericPhy;
-use embassy_stm32::eth::{Ethernet, PacketQueue};
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::mode::{Async, Blocking}; // Import Blocking mode
-use embassy_stm32::peripherals::ETH;
-use embassy_stm32::rng::Rng;
-use embassy_stm32::time::Hertz;
-use embassy_stm32::usart::{self, Config as Uart_Config, UartTx};
-use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config}; // Removed unused 'interrupt'
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_net::Stack;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Timer};
-use heapless::Vec;
-use static_cell::StaticCell;
+use embassy_time::Instant;
 use {defmt_rtt as _, panic_probe as _};
-
 
 #[embassy_executor::task]
 pub async fn artnet_task(
     stack: &'static Stack<'static>,
     mac_addr: [u8; 6],
-    signal: &'static Signal<NoopRawMutex, [u8; 512]>,
+    dmx_buffer: &'static Mutex<ThreadModeRawMutex, [[u8; 513]; 4]>,
 ) -> ! {
-    let mut rx_buffer = [0; 8024]; // Buffer for receiving UDP packets
-    let mut tx_buffer = [0; 8024]; // Buffer for sending UDP packets
+    let mut rx_buffer = [0; 1024 * 8]; // Buffer for receiving UDP packets
+    let mut tx_buffer = [0; 1024]; // Buffer for sending UDP packets
     let mut rx_meta = [PacketMetadata::EMPTY; 40];
     let mut tx_meta = [PacketMetadata::EMPTY; 40];
 
@@ -43,6 +29,7 @@ pub async fn artnet_task(
         &mut tx_meta,
         &mut tx_buffer,
     );
+
     socket.bind(6454).unwrap(); // Bind to ArtNet port
     info!("ArtNet task started, listening on UDP port 6454");
 
@@ -128,7 +115,7 @@ pub async fn artnet_task(
                 }
 
                 let opcode = u16::from_le_bytes([recv_buf[8], recv_buf[9]]);
-
+                debug!("Received ArtNet with opcode {}", opcode);
                 match opcode {
                     OPCODE_POLL => {
                         debug!("Received ArtPoll from {}", ep);
@@ -169,11 +156,11 @@ pub async fn artnet_task(
                                     let data = dmx_packet.data;
 
                                     // Copy the data to the static buffer, starting from index 1
-                                    unsafe {
-                                        DMX_BUFFER[universe][1..=dmx_packet.length as usize]
-                                            .copy_from_slice(&data[..dmx_packet.length as usize]);
-                                    }
 
+                                    dmx_buffer.lock().await[universe]
+                                        [1..=dmx_packet.length as usize]
+                                        .copy_from_slice(&data[..dmx_packet.length as usize]);
+                                    debug!("DMX Data copied to buffer");
                                     if last_sequence_numbers[universe] != 0 {
                                         let diff = dmx_packet
                                             .sequence
