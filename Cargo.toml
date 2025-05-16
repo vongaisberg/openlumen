@@ -7,7 +7,7 @@ edition = "2021"
 embassy-stm32 = { version = "0.2.0", features = ["defmt", "stm32f429zi", "unstable-pac", "memory-x", "time-driver-any", "exti", "chrono"] }
 embassy-executor = { version = "0.7.0", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { version = "0.4.0", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-net = { version = "0.7.0", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet"] }
+embassy-net = { version = "0.7.0", features = ["defmt", "udp", "dhcpv4", "medium-ethernet"] }
 
 defmt = "0.3"
 defmt-rtt = "0.4"
@@ -24,6 +24,8 @@ picoserve = { version= "0.15.1", features=["embassy"]}
 
 serde = { version = "1.0.197", features = ["derive"], default-features = false }
 serde-json-core = "0.6.0"
+smoltcp = { version = "0.12.0", default-features = false, features = ["socket", "async"] }
+itoa = "1.0.15"
 
 [patch.crates-io]
 #embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "a561a7625e1ea0eb3bd19a1fedf3a3d4ff484291" }
@@ -46,4 +48,4 @@ embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "52e4c7c30c
 [profile.release]
 debug = 2
 opt-level = "s"
-lto = "fat"
+lto = true

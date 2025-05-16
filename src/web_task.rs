@@ -2,6 +2,10 @@ use crate::artnet::dmx::ArtDmx;
 use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
+use crate::artnet_task::ARTNET_SOURCES;
+use crate::dmx_task::DMX_PORT_CONFIG;
+use crate::dmx_task::DMX_BUFFER;
+use crate::schema::{ArtnetConfig, DmxOutputUpdate, DmxPortConfig, DmxPortConfigUpdate, DmxPortOutput, IpConfigType, MergeMode, NetworkConfig, OutputRate, PortMode, SourceDevice, StateUpdate, StateUpdateData, SystemInfo, TypedMessage};
 use defmt::*;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::Stack;
@@ -21,6 +25,95 @@ use picoserve::{
 };
 use serde::Serialize;
 use serde_json_core;
+use heapless::String as String;
+use heapless::Vec as Vec;
+
+// Shared statistics structure
+pub static ARTNET_STATS: Mutex<ThreadModeRawMutex, ArtnetStats> = Mutex::new(ArtnetStats {
+    artdmx_count: 0,
+    dropped_packets: 0,
+    drop_rate: 0.0,
+});
+
+
+
+#[derive(Clone, Copy)]
+pub struct ArtnetStats {
+    pub artdmx_count: u32,
+    pub dropped_packets: u32,
+    pub drop_rate: f32,
+}
+
+static mut JSON_BUFFER: String<{1024*2}> = String::new();
+
+static mut BUFFER: [u8; 1024] = [0; 1024];
+
+// Mock function to get configuration values
+async fn get_config() -> (NetworkConfig, ArtnetConfig, Vec<DmxPortConfig, 4>, SystemInfo) {
+    let stats = ARTNET_STATS.lock().await;
+    let mut dmx_ports = Vec::new();
+    
+    // Create DMX ports with source devices
+    
+    let ports = DMX_PORT_CONFIG.lock().await;
+    let mut source_devices = ARTNET_SOURCES.lock().await;
+    for i in 0..4 {
+        let port = ports[i];
+        let source_devices = source_devices[i];
+        let mut source_devices_vec = Vec::new();
+        for source in source_devices {
+            if source.active {
+                source_devices_vec.push(SourceDevice {
+                    name: String::try_from(core::str::from_utf8(&source.name).unwrap()).unwrap( ),
+                    ip: source.ip,
+                    packets_per_second: Some(source.frequency),
+                }).unwrap();
+            }
+        }
+        dmx_ports.push(DmxPortConfig {
+            id: None,
+            port_number: i as u8,
+            mode: port.mode,
+            universe: port.universe,
+            merge_mode: port.merge_mode,
+            output_rate: OutputRate::Hz44,
+            source_devices: source_devices_vec,
+        }).unwrap();
+    }
+
+
+    (
+        NetworkConfig {
+            id: None,
+            ip_config_type: IpConfigType::Dhcp,
+            ip_address: Some([192, 168, 1, 100]),
+            subnet_mask: Some([255, 255, 255, 0]),
+            gateway: Some([192, 168, 1, 1]),
+            mac_address: String::try_from("00:11:22:33:44:55").unwrap(),
+            current_ip_address: Some([192, 168, 1, 100]),
+            current_subnet_mask: Some([255, 255, 255, 0]),
+            current_gateway: Some([192, 168, 1, 1]),
+        },
+        ArtnetConfig {
+            id: None,
+            net: 0,
+            subnet: 0,
+            device_name: String::try_from("ArtNet Node").unwrap(),
+        },
+        dmx_ports,
+        SystemInfo {
+            id: None,
+            firmware_version: [1, 0, 0],
+            hardware_version: [1, 0, 0],
+            uptime: 54,
+            temperature: 45,
+            artnet_traffic: stats.artdmx_count,
+            packet_loss: stats.drop_rate,
+            system_status: String::try_from("Running").unwrap(),
+            device_id: String::try_from("ARTNET-001").unwrap(),
+        }
+    )
+}
 
 pub struct Webinterface;
 
@@ -53,20 +146,8 @@ impl AppBuilder for Webinterface {
     }
 }
 
+
 struct WebsocketServer;
-
-#[derive(Serialize)]
-struct StatusMessage {
-    type_: &'static str,
-    data: StatusData,
-}
-
-#[derive(Serialize)]
-struct StatusData {
-    artdmx_count: u32,
-    dropped_packets: u32,
-    drop_rate: f32,
-}
 
 impl ws::WebSocketCallback for WebsocketServer {
     async fn run<R: embedded_io_async::Read, W: embedded_io_async::Write<Error = R::Error>>(
@@ -75,41 +156,65 @@ impl ws::WebSocketCallback for WebsocketServer {
         mut tx: ws::SocketTx<W>,
     ) -> Result<(), W::Error> {
         info!("WebSocket connection established");
-        let mut buffer = [0; 1024];
         let mut last_send = Instant::now();
+        let mut next_port = 4;
 
         let close_reason = loop {
             let now = Instant::now();
-            let time_until_next = if now.duration_since(last_send) >= Duration::from_secs(1) {
+            let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(25) {
                 Duration::from_millis(0)
             } else {
-                Duration::from_secs(1) - now.duration_since(last_send)
+                Duration::from_millis(25) - now.duration_since(last_send)
             };
 
             match select(
                 embassy_time::Timer::after(time_until_next),
-                rx.next_message(&mut buffer),
+                rx.next_message(unsafe { &mut BUFFER }),
             )
             .await
             {
                 Either::First(_) => {
-                    let status = StatusMessage {
-                        type_: "stateUpdate",
-                        data: StatusData {
-                            artdmx_count: 50, // TODO: Get actual values from artnet task
-                            dropped_packets: 0,
-                            drop_rate: 0.0,
-                        },
-                    };
-
-                    let json: heapless::String<1024> = serde_json_core::to_string(&status).unwrap();
-                    info!("Sending WebSocket message: {}", json);
-                    tx.send_text(&json).await?;
+                    if next_port == 4 {
+                        // Send updates sequentially instead of potentially concurrently
+                        send_state_update::<R, W>(&mut tx).await;
+                    } else {
+                        send_dmx_update::<R, W>(&mut tx, next_port).await;
+                    }
+                    debug!("DMX update sent");
                     last_send = Instant::now();
+                    next_port = (next_port + 1) % 5;
                 }
                 Either::Second(Ok(ws::Message::Text(data))) => {
                     if let Ok(text) = core::str::from_utf8(data.as_bytes()) {
                         info!("Received text message: {}", text);
+                        
+                        // Parse the message
+                        if let Ok((msg,_)) = serde_json_core::from_str::<TypedMessage>(text) {
+
+                            match msg.type_ {
+                                "dmxPortConfigUpdate" => {
+                                    info!("Received DMX port config update");
+                                    if let Ok((port_config_update, _)) = serde_json_core::from_str::<DmxPortConfigUpdate>(text) {
+                                        info!("Parsed DMX port config update");
+                                        let mut port_config = DMX_PORT_CONFIG.lock().await;
+                                        for port in port_config_update.data.iter() {
+                                            if port.port_number < 4 {
+                                                port_config[port.port_number as usize] = crate::artnet_task::DmxPortConfig {
+                                                    mode: port.mode,
+                                                    universe: port.universe,
+                                                    merge_mode: port.merge_mode,
+                                                };
+                                            }
+                                        }
+                                        info!("Updated DMX port configuration");
+                                    }
+                                },
+                                _ => {
+                                    info!("Unknown message type: {}", msg.type_);
+                                }   
+                            }
+                        
+                        }
                     }
                     tx.send_text(data).await?
                 }
@@ -174,4 +279,53 @@ pub async fn web_task(
         &mut http_buffer,
     )
     .await
+}
+
+async fn send_state_update<R: embedded_io_async::Read,  W: embedded_io_async::Write<Error = R::Error>>(tx: &mut ws::SocketTx<W>){
+    debug!("Starting state update");
+    let (network_config, artnet_config, dmx_ports, system_info) = get_config().await;
+    debug!("Got config");
+    let status = StateUpdate {
+        type_: "stateUpdate",
+        data: StateUpdateData {
+            network_config: Some(network_config),
+            artnet_config: Some(artnet_config),
+            dmx_ports: Some(dmx_ports),
+            system_info: Some(system_info)
+        },
+    };
+    debug!("Created status struct");
+    unsafe {
+        JSON_BUFFER = serde_json_core::to_string(&status).unwrap();
+    }
+    debug!("Serialized to JSON");
+    tx.send_text(unsafe { &JSON_BUFFER }).await;
+    debug!("Sent state update");
+}
+
+async fn send_dmx_update< R: embedded_io_async::Read, W: embedded_io_async::Write<Error = R::Error>>(tx: &mut ws::SocketTx<W>, port: u8){
+    debug!("Starting DMX update");
+    let mut dmx_outputs = Vec::new();
+    debug!("Created dmx_outputs vec");
+    
+    let dmx_buffer = DMX_BUFFER.lock().await;
+    
+    dmx_outputs.push(DmxPortOutput {
+        port_number: port,
+        dmx_data: Vec::from_slice(&dmx_buffer[port as usize][1..513]).unwrap(),
+    }).unwrap();
+    
+    debug!("Added DMX data to outputs");
+    
+    let update = DmxOutputUpdate {
+        type_: "dmxOutputUpdate",
+        data: dmx_outputs,
+    };
+    debug!("Created update struct");
+    unsafe {
+        JSON_BUFFER = serde_json_core::to_string(&update).unwrap();
+    }
+    debug!("Serialized to JSON");
+    tx.send_text(unsafe { &JSON_BUFFER }).await;
+    debug!("Sent DMX update");
 }

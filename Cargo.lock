@@ -28,10 +28,12 @@ dependencies = [
  "embassy-time",
  "embedded-io-async",
  "heapless",
+ "itoa",
  "panic-probe",
  "picoserve",
  "serde",
  "serde-json-core",
+ "smoltcp",
  "static_cell",
 ]
 
@@ -634,6 +636,12 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
+name = "itoa"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "lhash"

@@ -6,11 +6,12 @@ mod artnet;
 mod artnet_task;
 mod dmx_task;
 mod web_task;
+mod schema;
 
 use artnet::dmx;
-use artnet_task::artnet_task;
+use artnet_task::{artnet_task, ArtnetSource, DmxPortConfig, DEFAULT_ARTNET_SOURCE, DEFAULT_DMX_PORT_CONFIG};
 use defmt::*;
-use dmx_task::send_dmx;
+use dmx_task::{send_dmx, DMX_BUFFER};
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_stm32::eth::GenericPhy;
@@ -140,7 +141,8 @@ async fn main(spawner: Spawner) -> ! {
     uart_config.baudrate = 250_000; // Initial baud rate (DMX task will change it)
     uart_config.stop_bits = usart::StopBits::STOP2; // DMX requires 2 stop bits
                                                     // Use the correct constructor for blocking UART Tx
-    let dmx_uart1 = UartTx::new(p.UART5, p.PC12, p.DMA1_CH7, uart_config.clone()).unwrap();
+    //let dmx_uart1 = UartTx::new(p.UART5, p.PC12, p.DMA1_CH7, uart_config.clone()).unwrap();
+    let dmx_uart1 = UartTx::new(p.USART1, p.PB6, p.DMA2_CH7, uart_config.clone()).unwrap();
     let dmx_uart2 = UartTx::new(p.UART4, p.PA0, p.DMA1_CH4, uart_config.clone()).unwrap();
     let dmx_enable = Output::new(p.PC11, Level::Low, Speed::High); // DMX driver enable, start low (disabled)
     let dmx_uart3 = UartTx::new(p.UART7, p.PF7, p.DMA1_CH1, uart_config.clone()).unwrap();
@@ -151,14 +153,13 @@ async fn main(spawner: Spawner) -> ! {
     info!("DMX UART initialized");
 
     // Initialize the shared Data
-    static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; 513]; 4]> = Mutex::new([[0u8; 513]; 4]); // Global mutable buffer for DMX data
-
-    // Spawn ArtNet task
-    unwrap!(spawner.spawn(artnet_task(stack_ref, mac_addr, &DMX_BUFFER))); // Correct call
+   
+     // Spawn ArtNet task
+    unwrap!(spawner.spawn(artnet_task(stack_ref, mac_addr))); // Correct call
     info!("ArtNet task spawned");
 
     // Spawn DMX sending task
-    unwrap!(spawner.spawn(send_dmx(&DMX_BUFFER, dmx_uarts, dmx_enable))); // Correct call
+    unwrap!(spawner.spawn(send_dmx(dmx_uarts, dmx_enable))); // Correct call
     info!("DMX sending task spawned");
 
     // Spawn web task
@@ -189,7 +190,7 @@ async fn main(spawner: Spawner) -> ! {
             debug!("Heartbeat - IP: {}", config.address);
             
                 // Notify DMX task about new data
-                debug!("DMX data: {:?}", &DMX_BUFFER.lock().await[0]);
+            debug!("DMX data: {:?}", &DMX_BUFFER.lock().await[0]);
             
         } else {
             debug!("Heartbeat - No IP");

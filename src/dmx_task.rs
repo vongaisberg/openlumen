@@ -6,11 +6,16 @@ use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
+use crate::artnet_task::{DmxPortConfig, DEFAULT_DMX_PORT_CONFIG};
+
 use {defmt_rtt as _, panic_probe as _};
+
+pub static DMX_PORT_CONFIG: Mutex<ThreadModeRawMutex, [DmxPortConfig; 4]> = Mutex::new([DEFAULT_DMX_PORT_CONFIG; 4]); //At most 4 ports
+pub static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; 513]; 4]> = Mutex::new([[0u8; 513]; 4]); // Global mutable buffer for DMX data
+    
 
 #[embassy_executor::task]
 pub async fn send_dmx(
-    dmx_buffer: &'static Mutex<ThreadModeRawMutex, [[u8; 513]; 4]>,
     mut dmx_uarts: [UartTx<'static, Async>; 4],
     mut uart_enable: Output<'static>,
 ) {
@@ -32,7 +37,7 @@ pub async fn send_dmx(
             // uart.set_baudrate(250_000).unwrap();
         }
 
-        let mut dmx_data = dmx_buffer.lock().await.clone(); // Lock the DMX buffer for writing
+        let dmx_data = DMX_BUFFER.lock().await.clone(); // Lock the DMX buffer for writing
 
         // 4. Send DMX data
         let mut futures = dmx_uarts

@@ -1,60 +1,182 @@
 use serde::{Deserialize, Serialize};
+use heapless::String as String;
+use heapless::Vec as Vec;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    pub id: Option<i32>,
-    pub ip_config_type: String,
-    pub ip_address: Option<String>,
-    pub subnet_mask: Option<String>,
-    pub gateway: Option<String>,
-    pub mac_address: String,
-    pub current_ip_address: Option<String>,
-    pub current_subnet_mask: Option<String>,
-    pub current_gateway: Option<String>,
+    pub id: Option<u32>,
+    #[serde(rename = "ipConfigType")]
+    pub ip_config_type: IpConfigType,
+    #[serde(rename = "ipAddress")]
+    pub ip_address: Option<[u8; 4]>,
+    #[serde(rename = "subnetMask")]
+    pub subnet_mask: Option<[u8; 4]>,
+    pub gateway: Option<[u8; 4]>,
+    #[serde(rename = "macAddress")]
+    pub mac_address: String<18>,
+    #[serde(rename = "currentIpAddress")]
+    pub current_ip_address: Option<[u8; 4]>,
+    #[serde(rename = "currentSubnetMask")]
+    pub current_subnet_mask: Option<[u8; 4]>,
+    #[serde(rename = "currentGateway")]
+    pub current_gateway: Option<[u8; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum IpConfigType {
+    #[serde(rename = "dhcp")]
+    Dhcp,
+    #[serde(rename = "static")]
+    Static,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtnetConfig {
-    pub id: Option<i32>,
+    pub id: Option<u32>,
     pub net: u8,
     pub subnet: u8,
-    pub device_name: String,
-    pub protocol_version: String,
+    #[serde(rename = "deviceName")]
+    pub device_name: String<32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDevice {
-    pub name: String,
-    pub ip: String,
+    pub name: String<17>,
+    pub ip: [u8; 4],
+    #[serde(rename = "packets_per_second")]
     pub packets_per_second: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmxPortConfig {
     pub id: Option<i32>,
+    #[serde(rename = "portNumber")]
     pub port_number: u8,
-    pub mode: String,
+    pub mode: PortMode,
     pub universe: u8,
-    pub merge_mode: String,
-    pub output_rate: String,
-    pub packets_per_second: u32,
-    pub source_devices: Vec<SourceDevice>,
-    pub channel_values: Option<Vec<u8>>,
+    #[serde(rename = "mergeMode")]
+    pub merge_mode: MergeMode,
+    #[serde(rename = "outputRate")]
+    pub output_rate: OutputRate,
+    #[serde(rename = "sourceDevices")]
+    pub source_devices: Vec<SourceDevice, 2>,
+    //pub channel_values: Option<Vec<u8, 512>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DmxPortOutput {
+    #[serde(rename = "portNumber")]
+    pub port_number: u8,
+    #[serde(rename = "dmxData")]
+    pub dmx_data: Vec<u8, 512>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DmxOutputUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: Vec<DmxPortOutput, 4>,
+}   
+
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+pub enum PortMode {
+    #[serde(rename = "Active")]
+    Active,
+    #[serde(rename = "Inactive")]
+    Inactive,
+    #[serde(rename = "Blackout")]
+    Blackout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+pub enum MergeMode {
+    #[serde(rename = "Htp")]
+    Htp,
+    #[serde(rename = "Ltp")]
+    Ltp,
+    #[serde(rename = "Priority")]
+    Priority,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OutputRate {
+    #[serde(rename = "Hz20")]
+    Hz20,
+    #[serde(rename = "Hz30")]
+    Hz30,
+    #[serde(rename = "Hz44")]
+    Hz44,
+}   
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
-    pub id: Option<i32>,
-    pub firmware_version: String,
-    pub hardware_version: String,
-    pub uptime: String,
-    pub temperature: String,
-    pub memory_usage: u8,
-    pub cpu_load: u8,
+    pub id: Option<u32>,
+    #[serde(rename = "firmwareVersion")]
+    pub firmware_version: [u8; 3],
+    #[serde(rename = "hardwareVersion")]
+    pub hardware_version: [u8; 3],
+    pub uptime: u32,
+    pub temperature: i32,
+    #[serde(rename = "artnetTraffic")]
     pub artnet_traffic: u32,
-    pub packet_loss: u8,
-    pub system_status: String,
-    pub device_id: String,
-    pub current_firmware_version: String,
-    pub latest_firmware_version: String,
+    #[serde(rename = "packetLoss")]
+    pub packet_loss: f32,
+    #[serde(rename = "systemStatus")]
+    pub system_status: String<32>,
+    #[serde(rename = "deviceId")]
+    pub device_id: String<32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: StateUpdateData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateUpdateData {
+    #[serde(rename = "networkConfig")]
+    pub network_config: Option<NetworkConfig>,
+    #[serde(rename = "artnetConfig")]
+    pub artnet_config: Option<ArtnetConfig>,
+    #[serde(rename = "dmxPorts")]
+    pub dmx_ports: Option<Vec<DmxPortConfig, 4>>,
+    #[serde(rename = "systemInfo")]
+    pub system_info: Option<SystemInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DmxPortConfigUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: Vec<DmxPortConfig, 4>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfigUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: NetworkConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtnetConfigUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: ArtnetConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemInfoUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: SystemInfo,
 } 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypedMessage {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+}
