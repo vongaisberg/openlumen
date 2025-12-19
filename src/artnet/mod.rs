@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod poll;
 pub mod poll_reply;
 mod node_config;

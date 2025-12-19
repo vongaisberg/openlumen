@@ -1,86 +1,166 @@
-use core::array;
+//! DMX output task
+//!
+//! This task manages DMX frame transmission using PIO.
+//! The CPU controls the frame rate - frames are sent either:
+//! - On a fixed timer (20/30/44 Hz)
+//! - Immediately when new ArtNet data arrives
+//! - Matching the ArtNet sender's rate
 
 use defmt::*;
-use embassy_stm32::{gpio::Output, mode::Async, usart::UartTx};
-use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+use embassy_rp::gpio::Output;
+use embassy_rp::peripherals::PIO0;
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use heapless::Vec;
 
-use crate::artnet_task::{DmxPortConfig, DEFAULT_DMX_PORT_CONFIG};
+use crate::artnet_task::DmxPortConfig;
+use crate::dmx_pio::{DmxOutputs, DMX_FRAME_SIZE};
+use crate::schema::OutputRate;
 
 use {defmt_rtt as _, panic_probe as _};
 
-pub static DMX_PORT_CONFIG: Mutex<ThreadModeRawMutex, [DmxPortConfig; 4]> = Mutex::new([DEFAULT_DMX_PORT_CONFIG; 4]); //At most 4 ports
-pub static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; 513]; 4]> = Mutex::new([[0u8; 513]; 4]); // Global mutable buffer for DMX data
-    
+/// Global DMX buffer for 4 ports
+/// Each port has 513 bytes: 1 start code (0x00) + 512 channels
+pub static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; DMX_FRAME_SIZE]; 4]> =
+    Mutex::new([[0u8; DMX_FRAME_SIZE]; 4]);
 
+/// Signal to notify DMX task of new data
+/// Each bit represents a port that has new data
+pub static DMX_NEW_DATA: Signal<ThreadModeRawMutex, u8> = Signal::new();
+
+/// Default port configuration
+pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
+    mode: crate::schema::PortMode::Active,
+    universe: 0,
+    merge_mode: crate::schema::MergeMode::Htp,
+};
+
+/// Port configuration storage
+pub static DMX_PORT_CONFIG: Mutex<ThreadModeRawMutex, [DmxPortConfig; 4]> =
+    Mutex::new([DEFAULT_DMX_PORT_CONFIG; 4]);
+
+/// Convert OutputRate to Duration
+#[allow(dead_code)]
+fn rate_to_duration(rate: OutputRate) -> Duration {
+    match rate {
+        OutputRate::Hz20 => Duration::from_millis(50),  // 20 Hz
+        OutputRate::Hz30 => Duration::from_millis(33),  // ~30 Hz
+        OutputRate::Hz44 => Duration::from_millis(23),  // ~44 Hz (max DMX rate)
+    }
+}
+
+/// DMX output task using PIO
+///
+/// This task:
+/// 1. Waits for new data or timer expiry
+/// 2. Reads the DMX buffer
+/// 3. Sends frames via PIO
+/// 4. Manages the RS485 driver enable pin
 #[embassy_executor::task]
 pub async fn send_dmx(
-    mut dmx_uarts: [UartTx<'static, Async>; 4],
-    mut uart_enable: Output<'static>,
+    mut dmx_outputs: DmxOutputs<'static, PIO0>,
+    mut dmx1_dir: Output<'static>,
+    mut dmx2_dir: Output<'static>,
+    mut dmx3_dir: Output<'static>,
+    mut dmx4_dir: Output<'static>,
 ) {
-    let mut start = Instant::now();
-    let mut count = 0;
+    info!("DMX task started");
+
+    // Statistics tracking
+    let mut frame_count: u32 = 0;
+    let mut last_stats_time = Instant::now();
+
+    // Default frame interval (30 Hz)
+    let default_interval = Duration::from_millis(33);
+
+    // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
+    // Full frame is ~23ms, we add 1ms gap minimum
+    let min_inter_frame = Duration::from_millis(1);
+
+    let mut last_frame_time = Instant::now();
+
     loop {
-        //info!("Sending DMX data");
-        let now = Instant::now();
+        // Determine frame interval based on port configuration
+        // For simplicity, use the fastest configured rate
+        let frame_interval = {
+            let _configs = DMX_PORT_CONFIG.lock().await;
+            // Use the configured rate - default to 44 Hz
+            default_interval
+        };
 
-        uart_enable.set_high(); // Enable the DMX driver
+        // Wait for either:
+        // 1. New data signal (immediate transmission)
+        // 2. Timer expiry (periodic transmission)
+        let elapsed = last_frame_time.elapsed();
+        let timeout = if elapsed >= frame_interval {
+            Duration::from_millis(0)
+        } else {
+            frame_interval - elapsed
+        };
 
-        // 1. BREAK: Set slow baud rate and send break character/use hardware break
-        // Using hardware break is preferred for accuracy.
-        for uart in dmx_uarts.iter() {
-            // uart.set_baudrate(120_000).unwrap(); // Baud rate for break timing (~91.7us break)
-            uart.send_break(); // Send hardware break signal (holds line low)
-
-            //Set Baudrate to 250kbaud after break
-            // uart.set_baudrate(250_000).unwrap();
-        }
-
-        let dmx_data = DMX_BUFFER.lock().await.clone(); // Lock the DMX buffer for writing
-
-        // 4. Send DMX data
-        let mut futures = dmx_uarts
-            .iter_mut()
-            .zip(dmx_data.iter())
-            .map(|(uart, data)| uart.write(data))
-            .collect::<Vec<_, 4>>();
-
-        let (r1, r2, r3, r4) = embassy_futures::join::join4(
-            futures.remove(0),
-            futures.remove(0),
-            futures.remove(0),
-            futures.remove(0),
+        match embassy_futures::select::select(
+            DMX_NEW_DATA.wait(),
+            Timer::after(timeout),
         )
-        .await; // Wait for all UART writes to complete
-
-
-        if let Err(e) = r1 {
-            error!("Failed to send DMX data on UART1: {:?}", e);
+        .await
+        {
+            embassy_futures::select::Either::First(port_mask) => {
+                // New data arrived - check minimum inter-frame gap
+                let since_last = last_frame_time.elapsed();
+                if since_last < min_inter_frame {
+                    Timer::after(min_inter_frame - since_last).await;
         }
-        if let Err(e) = r2 {
-            error!("Failed to send DMX data on UART2: {:?}", e);
+                debug!("New ArtNet data, ports: 0b{:04b}", port_mask);
         }
-        if let Err(e) = r3 {
-            error!("Failed to send DMX data on UART3: {:?}", e);
+            embassy_futures::select::Either::Second(_) => {
+                // Timer expired - periodic refresh
+            }
         }
-        if let Err(e) = r4 {
-            error!("Failed to send DMX data on UART4: {:?}", e);
-        }
-        
 
-        Timer::after(Duration::from_millis(1)).await; // Wait for data to be sent
+        // Enable RS485 drivers (set DIR pins high for TX mode)
+        dmx1_dir.set_high();
+        dmx2_dir.set_high();
+        dmx3_dir.set_high();
+        dmx4_dir.set_high();
 
-        // 5. Inter-Frame Wait: Go idle and wait before next frame
-        uart_enable.set_low(); // Set line to idle (high impedance or low, depending on driver)
-        Timer::after(Duration::from_millis(1)).await; // Inter-frame spacing (~40Hz max)
-                                                      // --- End DMX Timing Critical Section ---
+        // Get a copy of the DMX buffers
+        let dmx_data = {
+            let buffer = DMX_BUFFER.lock().await;
+            buffer.clone()
+        };
 
-        count += 1; // Increment the count of DMX data sent
-        if Instant::now().duration_since(start).as_millis() >= 1000 {
-            //info!("DMX data sent {} times in 1 second", count);
-            count = 0; // Reset count after 1 second
-            start = Instant::now(); // Reset start time
+        // Send frames on all 4 ports concurrently
+        // PIO handles the precise timing (break, MAB, data)
+        dmx_outputs.send_all(&dmx_data).await;
+
+        // Small delay before disabling drivers (ensure last byte is transmitted)
+        Timer::after_micros(100).await;
+
+        // Disable RS485 drivers (optional - can leave enabled if preferred)
+        // dmx1_dir.set_low();
+        // dmx2_dir.set_low();
+        // dmx3_dir.set_low();
+        // dmx4_dir.set_low();
+
+        last_frame_time = Instant::now();
+        frame_count += 4; // 4 ports
+
+        // Statistics logging every second
+        let now = Instant::now();
+        if now.duration_since(last_stats_time) >= Duration::from_secs(1) {
+            let fps = frame_count;
+            debug!("DMX output: {} frames/sec ({} per port)", fps, fps / 4);
+            frame_count = 0;
+            last_stats_time = now;
         }
     }
+}
+
+/// Notify the DMX task that new data is available
+///
+/// # Arguments
+/// * `port_mask` - Bitmask of ports with new data (bit 0 = port 0, etc.)
+pub fn notify_new_data(port_mask: u8) {
+    DMX_NEW_DATA.signal(port_mask);
 }

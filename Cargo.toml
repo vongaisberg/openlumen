@@ -4,40 +4,60 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Embassy RP2350 HAL
-embassy-rp = { version = "0.4", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa"] }
-embassy-executor = { version = "0.7", features = ["arch-cortex-m", "executor-thread", "defmt"] }
-embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-net = { version = "0.7", features = ["defmt", "udp", "dhcpv4", "medium-ethernet"] }
-embassy-net-wiznet = { version = "0.2" }
-embassy-sync = "0.6"
-embassy-futures = "0.1"
+# Embassy RP2350 support - using local embassy checkout
+embassy-rp = { path = "/home/max/git/embassy/embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
+embassy-executor = { path = "/home/max/git/embassy/embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { path = "/home/max/git/embassy/embassy-time", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-net = { path = "/home/max/git/embassy/embassy-net", features = ["defmt", "udp", "dhcpv4", "medium-ethernet", "tcp", "icmp"] }
+embassy-net-wiznet = { path = "/home/max/git/embassy/embassy-net-wiznet", features = ["defmt"] }
+embassy-sync = { path = "/home/max/git/embassy/embassy-sync", features = ["defmt"] }
+embassy-futures = { path = "/home/max/git/embassy/embassy-futures" }
+embassy-embedded-hal = { path = "/home/max/git/embassy/embassy-embedded-hal", features = ["defmt"] }
 
 # PIO support
 pio = "0.2"
 pio-proc = "0.2"
-fixed = "1.28"
-fixed-macro = "1.2"
 
-# Common dependencies
-defmt = "0.3"
-defmt-rtt = "0.4"
-cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
-embedded-io-async = "0.6"
+# Logging and debugging
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+
+# Async and embedded utilities
+embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
 embedded-hal-async = "1.0"
+embedded-hal-bus = { version = "0.2", features = ["async"] }
 static_cell = "2"
 heapless = "0.8"
 bitflags = "2"
+
+# Serialization
 serde = { version = "1", features = ["derive"], default-features = false }
 serde-json-core = "0.6"
+
+# Web server
 picoserve = { version = "0.15", features = ["embassy"] }
-smoltcp = { version = "0.12", default-features = false, features = ["socket", "async"] }
+
+# Utilities
 itoa = "1.0"
-rand = { version = "0.8", default-features = false }
+rand_core = "0.6"
+fixed = "1.28"
+fixed-macro = "1.2"
 
 [profile.release]
-debug = 2
+debug = true
 opt-level = "s"
 lto = true
+
+[profile.dev]
+debug = true
+opt-level = 1
+
+# Patch picoserve's embassy dependencies to use our local versions
+[patch.crates-io]
+embassy-time = { path = "/home/max/git/embassy/embassy-time" }
+embassy-time-driver = { path = "/home/max/git/embassy/embassy-time-driver" }
+embassy-net = { path = "/home/max/git/embassy/embassy-net" }
+embassy-executor = { path = "/home/max/git/embassy/embassy-executor" }

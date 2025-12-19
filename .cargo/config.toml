@@ -1,13 +1,8 @@
-[target.'cfg(all(target_arch = "arm", target_os = "none"))']
-# replace STM32F429ZITx with your chip as listed in `probe-rs chip list`
-runner = "picotool load -u -v -x -t elf"
+[target.thumbv8m.main-none-eabihf]
+runner = "picotool load --family rp2350-arm-s -v -x -t elf"
 
 [build]
-target = "thumbv7em-none-eabi"
+target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "trace"
-
-[unstable]
-build-std = ["core"]
-build-std-features = ["panic_immediate_abort"]
+DEFMT_LOG = "debug"
