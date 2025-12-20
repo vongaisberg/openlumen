@@ -12,9 +12,10 @@ use defmt::*;
 use embassy_futures::yield_now;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::Stack;
+use embassy_rp::gpio::Output;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::Instant;
+use embassy_time::{Duration, Instant, Timer};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -91,7 +92,11 @@ pub static ARTNET_SOURCES: Mutex<ThreadModeRawMutex, [[ArtnetSource; 2]; 4]> =
 
 /// ArtNet receiver task
 #[embassy_executor::task]
-pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
+pub async fn artnet_task(
+    stack: &'static Stack<'static>, 
+    mac_addr: [u8; 6],
+    mut led: Output<'static>,
+) -> ! {
     // Use smaller buffers matching embassy examples
     let mut rx_buffer = [0; 2048];
     let mut tx_buffer = [0; 1024];
@@ -108,11 +113,27 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
 
     if let Err(e) = socket.bind(6454) {
         error!("Failed to bind ArtNet socket: {:?}", e);
+        // Fast blink = socket bind failed
         loop {
-            yield_now().await;
+            led.set_high();
+            Timer::after(Duration::from_millis(50)).await;
+            led.set_low();
+            Timer::after(Duration::from_millis(50)).await;
         }
     }
     info!("ArtNet task started, listening on UDP port 6454");
+    
+    // Clear startup pattern: 3 long blinks = ArtNet task ready
+    for _ in 0..3 {
+        led.set_high();
+        Timer::after(Duration::from_millis(300)).await;
+        led.set_low();
+        Timer::after(Duration::from_millis(200)).await;
+    }
+    Timer::after(Duration::from_millis(500)).await; // Pause after startup
+    
+    let mut last_heartbeat = Instant::now();
+    let mut packet_count = 0u32;
 
     // Get our IP address
     let mut ip = [0u8; 4];
@@ -198,6 +219,11 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                 if n < 12 || !recv_buf.starts_with(b"Art-Net\0") {
                     continue;
                 }
+                
+                packet_count += 1;
+                
+                // Blink LED when valid ArtNet packet received (longer blink for visibility)
+                led.set_high();
 
                 let opcode = u16::from_le_bytes([recv_buf[8], recv_buf[9]]);
 
@@ -333,10 +359,27 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                         // Unsupported opcode
                     }
                 }
+                
+                // Turn LED off after processing (keep it on longer for visibility)
+                Timer::after(Duration::from_millis(50)).await; // Keep LED on for 50ms
+                led.set_low();
             }
             Err(_) => {
                 // Receive error - continue
             }
+        }
+        
+        // Heartbeat: blink LED every 5 seconds if no packets received
+        // This shows the task is alive and listening
+        if now.duration_since(last_heartbeat) >= Duration::from_secs(5) {
+            if packet_count == 0 {
+                // No packets received - long blink to show we're alive and waiting
+                led.set_high();
+                Timer::after(Duration::from_millis(200)).await; // Longer blink for heartbeat
+                led.set_low();
+            }
+            packet_count = 0;
+            last_heartbeat = now;
         }
 
         // Update statistics every second

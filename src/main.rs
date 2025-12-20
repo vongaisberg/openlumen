@@ -11,7 +11,7 @@ mod web_task;
 
 use artnet_task::artnet_task;
 use defmt::*;
-use dmx_pio::DmxOutputs;
+use dmx_pio::{DmxOutputs, DmxOutputsPIO0};
 use dmx_task::{send_dmx, DMX_BUFFER};
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -119,7 +119,11 @@ async fn main(spawner: Spawner) {
         Timer::after(Duration::from_millis(300)).await;
     }
     
-    blink_stage(&mut led, 1).await; // Stage 1: Starting W5500 setup
+    // Single long blink = startup
+    led.set_high();
+    Timer::after(Duration::from_millis(500)).await;
+    led.set_low();
+    Timer::after(Duration::from_millis(200)).await;
 
     // ========================================================================
     // W5500 Ethernet Setup
@@ -158,14 +162,11 @@ async fn main(spawner: Spawner) {
     static STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let state = STATE.init(embassy_net_wiznet::State::<8, 8>::new());
 
-    blink_stage(&mut led, 2).await; // Stage 2: About to init W5500
-    
     // Create W5500 device and runner
     info!("Initializing W5500...");
     let (device, runner) = match embassy_net_wiznet::new(mac_addr, state, spi_device, w5500_int, w5500_rst).await {
         Ok((d, r)) => {
             info!("W5500 initialized successfully!");
-            blink_stage(&mut led, 3).await; // Stage 3: W5500 init success
             (d, r)
         }
         Err(_) => {
@@ -224,7 +225,6 @@ async fn main(spawner: Spawner) {
         runner.run().await
     }
     spawner.spawn(stack_task(net_runner).unwrap());
-    blink_stage(&mut led, 4).await; // Stage 4: Network stack spawned
 
     // Wait for network config
     info!("Waiting for network config...");
@@ -238,25 +238,16 @@ async fn main(spawner: Spawner) {
             config.address.address().octets()[3]
         );
     }
-    blink_stage(&mut led, 5).await; // Stage 5: Network configured
-
-    // Quick blink to confirm we're past wait_config_up
-    led.set_high();
-    Timer::after(Duration::from_millis(200)).await;
-    led.set_low();
-    Timer::after(Duration::from_millis(200)).await;
+    // Two blinks = network ready
+    for _ in 0..2 {
+        led.set_high();
+        Timer::after(Duration::from_millis(200)).await;
+        led.set_low();
+        Timer::after(Duration::from_millis(200)).await;
+    }
 
     static STACK: StaticCell<Stack<'static>> = StaticCell::new();
     let stack_ref = STACK.init(stack);
-    
-    // Quick double blink to confirm STACK.init succeeded
-    for _ in 0..2 {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(100)).await;
-    }
-    Timer::after(Duration::from_millis(300)).await;
 
     // ========================================================================
     // DMX PIO Setup
@@ -271,6 +262,13 @@ async fn main(spawner: Spawner) {
         ..
     } = Pio::new(p.PIO0, Irqs);
 
+    // DMA channels for PIO (DMA_CH0 and DMA_CH1 are used for SPI)
+    // Using channels 2, 3, 4, 5 for the 4 DMX outputs
+    let dma_ch2 = p.DMA_CH2;
+    let dma_ch3 = p.DMA_CH3;
+    let dma_ch4 = p.DMA_CH4;
+    let dma_ch5 = p.DMA_CH5;
+
     let dmx_outputs = DmxOutputs::new(
         &mut common,
         sm0,
@@ -281,22 +279,26 @@ async fn main(spawner: Spawner) {
         p.PIN_7,  // DMX2 TX
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
+        dma_ch2,  // DMA for DMX1
+        dma_ch3,  // DMA for DMX2
+        dma_ch4,  // DMA for DMX3
+        dma_ch5,  // DMA for DMX4
     );
-    info!("PIO DMX outputs initialized (all 4 SMs)");
+    info!("PIO DMX outputs initialized with DMA (all 4 SMs)");
 
     // Individual DIR pins for each DMX output (RS485 TX enable)
     let dmx1_dir = Output::new(p.PIN_5, Level::Low);  // DMX1 DIR
     let dmx2_dir = Output::new(p.PIN_8, Level::Low);  // DMX2 DIR
     let dmx3_dir = Output::new(p.PIN_11, Level::Low); // DMX3 DIR
     let dmx4_dir = Output::new(p.PIN_14, Level::Low); // DMX4 DIR
-    
-    blink_stage(&mut led, 6).await; // Stage 6: DMX ready
 
     // ========================================================================
     // Spawn Application Tasks
     // ========================================================================
 
-    spawner.spawn(artnet_task(stack_ref, mac_addr).unwrap());
+    // Pass LED to ArtNet task for status indication
+    // ArtNet task will blink LED when packets are received
+    spawner.spawn(artnet_task(stack_ref, mac_addr, led).unwrap());
     info!("ArtNet task spawned");
 
     spawner.spawn(send_dmx(dmx_outputs, dmx1_dir, dmx2_dir, dmx3_dir, dmx4_dir).unwrap());
@@ -324,25 +326,14 @@ async fn main(spawner: Spawner) {
     info!("Web server tasks spawned (port 80)");
 
     info!("ArtNet node running! IP: 192.168.0.2, ArtNet: 6454, Web: 80");
-    
-    // Rapid blink to confirm main loop entered
-    for _ in 0..10 {
-        led.set_high();
-        Timer::after(Duration::from_millis(50)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(50)).await;
-    }
+    // LED is now owned by ArtNet task - it will blink when packets are received
 
     // ========================================================================
-    // Main Loop - heartbeat blink
+    // Main Loop - just yield forever
     // ========================================================================
     
     info!("Entering main loop...");
     loop {
-        // Long heartbeat - LED on for 500ms every 2 seconds
-        led.set_high();
-        Timer::after(Duration::from_millis(500)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(1500)).await;
+        Timer::after(Duration::from_secs(60)).await; // Just yield periodically
     }
 }

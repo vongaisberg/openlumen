@@ -15,7 +15,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 
 use crate::artnet_task::DmxPortConfig;
-use crate::dmx_pio::{DmxOutputs, DMX_FRAME_SIZE};
+use crate::dmx_pio::{DmxOutputsPIO0, DMX_FRAME_SIZE};
 use crate::schema::OutputRate;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -59,7 +59,7 @@ fn rate_to_duration(rate: OutputRate) -> Duration {
 /// 4. Manages the RS485 driver enable pin
 #[embassy_executor::task]
 pub async fn send_dmx(
-    mut dmx_outputs: DmxOutputs<'static, PIO0>,
+    mut dmx_outputs: DmxOutputsPIO0,
     mut dmx1_dir: Output<'static>,
     mut dmx2_dir: Output<'static>,
     mut dmx3_dir: Output<'static>,
@@ -72,7 +72,7 @@ pub async fn send_dmx(
     let mut last_stats_time = Instant::now();
 
     // Default frame interval (30 Hz)
-    let default_interval = Duration::from_millis(33);
+    let default_interval = Duration::from_millis(1000);
 
     // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
     // Full frame is ~23ms, we add 1ms gap minimum
