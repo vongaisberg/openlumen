@@ -6,8 +6,8 @@
 use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
-use crate::dmx_task::{notify_new_data, DMX_BUFFER, DMX_PORT_CONFIG};
-use crate::schema::{MergeMode, PortMode};
+use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG, notify_new_data};
+use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode, PortMode};
 use defmt::*;
 use embassy_futures::yield_now;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -32,31 +32,7 @@ pub struct ArtnetStats {
     pub drop_rate: f32,
 }
 
-/// DMX port configuration
-#[derive(Debug, Clone, Copy)]
-pub struct DmxPortConfig {
-    pub mode: PortMode,
-    pub universe: u8,
-    pub merge_mode: MergeMode,
-}
 
-#[allow(dead_code)]
-impl DmxPortConfig {
-    pub const fn new() -> Self {
-        Self {
-            mode: PortMode::Inactive,
-            universe: 0,
-            merge_mode: MergeMode::Htp,
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
-    mode: PortMode::Active,
-    universe: 0,
-    merge_mode: MergeMode::Htp,
-};
 
 /// ArtNet source tracking
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +64,16 @@ pub const DEFAULT_ARTNET_SOURCE: ArtnetSource = ArtnetSource {
 /// Storage for ArtNet sources (2 sources per port for merging)
 pub static ARTNET_SOURCES: Mutex<ThreadModeRawMutex, [[ArtnetSource; 2]; 4]> =
     Mutex::new([[DEFAULT_ARTNET_SOURCE; 2]; 4]);
+
+
+/// Runtime ArtNet node configuration
+pub static ARTNET_NODE_CONFIG: Mutex<ThreadModeRawMutex, ArtnetConfig> =
+    Mutex::new(ArtnetConfig {
+        net: 0,
+        subnet: 0,
+        device_name: heapless::String::new(),
+        id: None,
+    });
 
 /// ArtNet receiver task
 #[embassy_executor::task]
@@ -122,8 +108,8 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
         error!("ArtNet task: No IPv4 configuration found!");
     }
 
-    // Node configuration for ArtPollReply
-    let node_config = PollReply {
+    // Node configuration for ArtPollReply - will be updated in the loop
+    let mut node_config = PollReply {
         ip_address: ip,
         port: 6454,
         firmware_version: 0x0001,
@@ -134,12 +120,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
         status1: Status1::IndicatorNormal,
         esta_manufacturer: 0x0922,
         port_name: [0; 18],
-        long_name: {
-            let mut name = [0u8; 64];
-            let bytes = b"RP2350 ArtNet Node";
-            name[..bytes.len()].copy_from_slice(bytes);
-            name
-        },
+        long_name: [0u8; 64],
         node_report: [0; 64],
         num_ports: 4,
         port_types: [
@@ -301,7 +282,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                             }
 
                             // Get port config and merge data
-                            let port_config = DMX_PORT_CONFIG.lock().await[port_index];
+                            let port_config = &DMX_PORT_CONFIG.lock().await[port_index];
 
                             // Lock main DMX buffer and merge
                             {
@@ -321,6 +302,20 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                     }
 
                     OPCODE_POLL => {
+                        // Update node config from runtime storage
+                        {
+                            let config = ARTNET_NODE_CONFIG.lock().await;
+                            node_config.net = config.net;
+                            node_config.sub_net = config.subnet;
+                            let name_bytes = config.device_name.as_bytes();
+                            let copy_len = node_config.long_name.len().min(name_bytes.len());
+                            node_config.long_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+                            // Zero out the rest
+                            for i in copy_len..node_config.long_name.len() {
+                                node_config.long_name[i] = 0;
+                            }
+                        }
+                        
                         let mut reply_buf = [0u8; 240];
                         let len = node_config.to_buffer(&mut reply_buf);
 

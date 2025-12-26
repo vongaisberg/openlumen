@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use heapless::String as String;
 use heapless::Vec as Vec;
 
+// This file contains the schemas for configuration and information transmitted to and from the frontend
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub id: Option<u32>,
@@ -22,7 +24,7 @@ pub struct NetworkConfig {
     pub current_gateway: Option<[u8; 4]>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum IpConfigType {
     #[serde(rename = "dhcp")]
     Dhcp,
@@ -39,6 +41,31 @@ pub struct ArtnetConfig {
     pub device_name: String<32>,
 }
 
+/// Network configuration update item (editable fields only)
+/// This struct is used for updates from the frontend and excludes read-only fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfigUpdateItem {
+    #[serde(rename = "ipConfigType")]
+    pub ip_config_type: IpConfigType,
+    #[serde(rename = "ipAddress")]
+    pub ip_address: Option<[u8; 4]>,
+    #[serde(rename = "subnetMask")]
+    pub subnet_mask: Option<[u8; 4]>,
+    pub gateway: Option<[u8; 4]>,
+    // Note: id, macAddress, and current_* fields are intentionally omitted - they're read-only
+}
+
+/// ArtNet configuration update item (editable fields only)
+/// This struct is used for updates from the frontend and excludes read-only fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtnetConfigUpdateItem {
+    pub net: u8,
+    pub subnet: u8,
+    #[serde(rename = "deviceName")]
+    pub device_name: String<32>,
+    // Note: id is intentionally omitted - it's read-only
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceDevice {
     pub name: String<17>,
@@ -49,9 +76,6 @@ pub struct SourceDevice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DmxPortConfig {
-    pub id: Option<i32>,
-    #[serde(rename = "portNumber")]
-    pub port_number: u8,
     pub mode: PortMode,
     pub universe: u8,
     #[serde(rename = "mergeMode")]
@@ -60,7 +84,19 @@ pub struct DmxPortConfig {
     pub output_rate: OutputRate,
     #[serde(rename = "sourceDevices")]
     pub source_devices: Vec<SourceDevice, 2>,
-    //pub channel_values: Option<Vec<u8, 512>>,
+}
+
+/// DMX port configuration update item (editable fields only)
+/// This struct is used for updates from the frontend and excludes read-only fields like sourceDevices
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DmxPortConfigUpdateItem {
+    pub mode: PortMode,
+    pub universe: u8,
+    #[serde(rename = "mergeMode")]
+    pub merge_mode: MergeMode,
+    #[serde(rename = "outputRate")]
+    pub output_rate: OutputRate,
+    // Note: sourceDevices is intentionally omitted - it's read-only and reported by the backend
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +134,7 @@ pub enum MergeMode {
     Priority,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum OutputRate {
     #[serde(rename = "Hz20")]
     Hz20,
@@ -151,21 +187,21 @@ pub struct StateUpdateData {
 pub struct DmxPortConfigUpdate {
     #[serde(rename = "type")]
     pub type_: &'static str,
-    pub data: Vec<DmxPortConfig, 4>,
+    pub data: Vec<DmxPortConfigUpdateItem, 4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfigUpdate {
     #[serde(rename = "type")]
     pub type_: &'static str,
-    pub data: NetworkConfig,
+    pub data: NetworkConfigUpdateItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtnetConfigUpdate {
     #[serde(rename = "type")]
     pub type_: &'static str,
-    pub data: ArtnetConfig,
+    pub data: ArtnetConfigUpdateItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

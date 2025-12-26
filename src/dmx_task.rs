@@ -13,10 +13,12 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
+use heapless::Vec;
 
-use crate::artnet_task::DmxPortConfig;
+use crate::schema::DmxPortConfig;
 use crate::dmx_pio::{DmxOutputs, DMX_FRAME_SIZE};
 use crate::schema::OutputRate;
+use crate::web_task;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -34,6 +36,8 @@ pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
     mode: crate::schema::PortMode::Active,
     universe: 0,
     merge_mode: crate::schema::MergeMode::Htp,
+    output_rate: OutputRate::Hz44,
+    source_devices: Vec::new()
 };
 
 /// Port configuration storage
@@ -71,8 +75,8 @@ pub async fn send_dmx(
     let mut frame_count: u32 = 0;
     let mut last_stats_time = Instant::now();
 
-    // Default frame interval (30 Hz)
-    let default_interval = Duration::from_millis(33);
+    // Default frame interval (1 Hz)
+    let default_interval = Duration::from_millis(1_000_000_000);
 
     // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
     // Full frame is ~23ms, we add 1ms gap minimum
@@ -84,9 +88,9 @@ pub async fn send_dmx(
         // Determine frame interval based on port configuration
         // For simplicity, use the fastest configured rate
         let frame_interval = {
-            let _configs = DMX_PORT_CONFIG.lock().await;
-            // Use the configured rate - default to 44 Hz
-            default_interval
+            let config = DMX_PORT_CONFIG.lock().await;
+
+            rate_to_duration(config[0].output_rate)
         };
 
         // Wait for either:
@@ -138,10 +142,10 @@ pub async fn send_dmx(
         Timer::after_micros(100).await;
 
         // Disable RS485 drivers (optional - can leave enabled if preferred)
-        // dmx1_dir.set_low();
-        // dmx2_dir.set_low();
-        // dmx3_dir.set_low();
-        // dmx4_dir.set_low();
+        dmx1_dir.set_low();
+        dmx2_dir.set_low();
+        dmx3_dir.set_low();
+        dmx4_dir.set_low();
 
         last_frame_time = Instant::now();
         frame_count += 4; // 4 ports

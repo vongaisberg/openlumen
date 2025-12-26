@@ -7,16 +7,17 @@ mod artnet_task;
 mod dmx_pio;
 mod dmx_task;
 mod schema;
+mod storage;
 mod web_task;
 
 use artnet_task::artnet_task;
+use dmx_task::DMX_PORT_CONFIG;
 use defmt::*;
 use dmx_pio::DmxOutputs;
-use dmx_task::{send_dmx, DMX_BUFFER};
+use dmx_task::send_dmx;
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::clocks::RoscRng;
-use rand_core::RngCore;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::peripherals::PIO0;
@@ -24,7 +25,7 @@ use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
-use heapless::Vec;
+use heapless::{String, Vec};
 use picoserve::{make_static, AppBuilder, AppRouter};
 use static_cell::StaticCell;
 use web_task::{web_task, Webinterface};
@@ -34,6 +35,33 @@ use {defmt_rtt as _, panic_probe as _};
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
+
+/// Convert subnet mask to prefix length
+fn subnet_mask_to_prefix_len(mask: [u8; 4]) -> u8 {
+    let mut prefix = 0u8;
+    for &byte in &mask {
+        if byte == 0xFF {
+            prefix += 8;
+        } else {
+            let mut b = byte;
+            while b & 0x80 != 0 {
+                prefix += 1;
+                b <<= 1;
+            }
+            break;
+        }
+    }
+    prefix
+}
+
+/// Get default network configuration
+fn get_default_net_config() -> embassy_net::Config {
+    embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+        address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 0, 2), 24),
+        dns_servers: Vec::new(),
+        gateway: Some(Ipv4Address::new(192, 168, 0, 1)),
+    })
+}
 
 // ============================================================================
 // Pin Configuration for WIZnet Pico2-W5500 + Custom DMX Board
@@ -112,14 +140,61 @@ async fn main(spawner: Spawner) {
     async fn blink_stage(led: &mut Output<'_>, count: u32) {
         for _ in 0..count {
             led.set_high();
-            Timer::after(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(150)).await;
             led.set_low();
-            Timer::after(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(150)).await;
         }
-        Timer::after(Duration::from_millis(300)).await;
+        Timer::after(Duration::from_millis(450)).await;
     }
     
-    blink_stage(&mut led, 1).await; // Stage 1: Starting W5500 setup
+    //blink_stage(&mut led, 1).await; // Stage 1: Starting W5500 setup
+
+    // ========================================================================
+    // Load Settings from Flash
+    // ========================================================================
+    
+    info!("Loading settings from flash...");
+    let stored_settings = match storage::load_settings() {
+        Ok(settings) => {
+            info!("Settings loaded from flash successfully");
+            Some(settings)
+        }
+        Err(e) => {
+            warn!("Failed to load settings from flash: {:?}, using defaults", e);
+            None
+        }
+    };
+    
+    // Apply DMX port configurations if loaded
+    if let Some(ref settings) = stored_settings {
+        let mut port_config = DMX_PORT_CONFIG.lock().await;
+        for (i, port) in settings.dmx_ports.iter().enumerate() {
+            if i < 4 {
+                port_config[i] = port.clone();
+            }
+        }
+        info!("Applied DMX port configurations from flash");
+        
+        // Apply ArtNet configuration if loaded
+        let mut artnet_config = crate::artnet_task::ARTNET_NODE_CONFIG.lock().await;
+        artnet_config.net = settings.artnet_config.net;
+        artnet_config.subnet = settings.artnet_config.subnet;
+        artnet_config.device_name = settings.artnet_config.device_name.clone();
+        info!("Applied ArtNet configuration from flash");
+        
+        // Apply network configuration if loaded
+        let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
+        network_config.ip_config_type = settings.network_config.ip_config_type;
+        network_config.ip_address = settings.network_config.ip_address;
+        network_config.subnet_mask = settings.network_config.subnet_mask;
+        network_config.gateway = settings.network_config.gateway;
+        network_config.mac_address = settings.network_config.mac_address.clone();
+        info!("Applied network configuration from flash");
+    } else {
+        // Set default network config in runtime storage
+        let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
+        network_config.mac_address = String::try_from("02:00:DE:AD:BE:EF").unwrap_or_default();
+    }
 
     // ========================================================================
     // W5500 Ethernet Setup
@@ -158,14 +233,12 @@ async fn main(spawner: Spawner) {
     static STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let state = STATE.init(embassy_net_wiznet::State::<8, 8>::new());
 
-    blink_stage(&mut led, 2).await; // Stage 2: About to init W5500
     
     // Create W5500 device and runner
     info!("Initializing W5500...");
     let (device, runner) = match embassy_net_wiznet::new(mac_addr, state, spi_device, w5500_int, w5500_rst).await {
         Ok((d, r)) => {
             info!("W5500 initialized successfully!");
-            blink_stage(&mut led, 3).await; // Stage 3: W5500 init success
             (d, r)
         }
         Err(_) => {
@@ -197,12 +270,44 @@ async fn main(spawner: Spawner) {
     // Network Stack Setup
     // ========================================================================
 
-    // Static IP for direct connection testing
-    let net_config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 0, 2), 24),
-        dns_servers: Vec::new(),
-        gateway: Some(Ipv4Address::new(192, 168, 0, 1)),
-    });
+    // Use network config from flash if available, otherwise use defaults
+    let net_config = if let Some(ref settings) = stored_settings {
+        match settings.network_config.ip_config_type {
+            crate::schema::IpConfigType::Static => {
+                if let (Some(ip), Some(subnet), Some(gateway)) = (
+                    settings.network_config.ip_address,
+                    settings.network_config.subnet_mask,
+                    settings.network_config.gateway,
+                ) {
+                    // Calculate subnet prefix length from subnet mask
+                    let prefix_len = subnet_mask_to_prefix_len(subnet);
+                    info!(
+                        "Using network config from flash: {}.{}.{}.{}/{}",
+                        ip[0], ip[1], ip[2], ip[3], prefix_len
+                    );
+                    embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+                        address: Ipv4Cidr::new(Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]), prefix_len),
+                        dns_servers: Vec::new(),
+                        gateway: Some(Ipv4Address::new(gateway[0], gateway[1], gateway[2], gateway[3])),
+                    })
+                } else {
+                    warn!("Incomplete network config in flash, using defaults");
+                    get_default_net_config()
+                }
+            }
+            crate::schema::IpConfigType::Dhcp => {
+                info!("Using DHCP from flash settings");
+                // Note: DHCP support may require additional embassy-net features
+                // For now, fall back to static config
+                warn!("DHCP not fully supported, using defaults");
+                get_default_net_config()
+            }
+        }
+    } else {
+        // Default static IP configuration
+        info!("Using default network configuration");
+        get_default_net_config()
+    };
 
     // Proper random seed using ring oscillator
     let mut rng = RoscRng;
@@ -224,39 +329,37 @@ async fn main(spawner: Spawner) {
         runner.run().await
     }
     spawner.spawn(stack_task(net_runner).unwrap());
-    blink_stage(&mut led, 4).await; // Stage 4: Network stack spawned
 
     // Wait for network config
     info!("Waiting for network config...");
     stack.wait_config_up().await;
     if let Some(config) = stack.config_v4() {
+        let ip = config.address.address().octets();
+        let prefix = config.address.prefix_len();
+        let gateway = config.gateway.map(|g| g.octets());
+        
         info!(
             "IP: {}.{}.{}.{}",
-            config.address.address().octets()[0],
-            config.address.address().octets()[1],
-            config.address.address().octets()[2],
-            config.address.address().octets()[3]
+            ip[0], ip[1], ip[2], ip[3]
         );
+        
+        // Update runtime network config with actual current values
+        let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
+        network_config.current_ip_address = Some(ip);
+        // Convert prefix length back to subnet mask (simplified - assumes /24, /16, /8)
+        let subnet_mask = match prefix {
+            24 => Some([255, 255, 255, 0]),
+            16 => Some([255, 255, 0, 0]),
+            8 => Some([255, 0, 0, 0]),
+            _ => Some([255, 255, 255, 0]), // Default to /24
+        };
+        network_config.current_subnet_mask = subnet_mask;
+        network_config.current_gateway = gateway;
     }
-    blink_stage(&mut led, 5).await; // Stage 5: Network configured
-
-    // Quick blink to confirm we're past wait_config_up
-    led.set_high();
-    Timer::after(Duration::from_millis(200)).await;
-    led.set_low();
-    Timer::after(Duration::from_millis(200)).await;
 
     static STACK: StaticCell<Stack<'static>> = StaticCell::new();
     let stack_ref = STACK.init(stack);
     
-    // Quick double blink to confirm STACK.init succeeded
-    for _ in 0..2 {
-        led.set_high();
-        Timer::after(Duration::from_millis(100)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(100)).await;
-    }
-    Timer::after(Duration::from_millis(300)).await;
 
     // ========================================================================
     // DMX PIO Setup
@@ -290,7 +393,7 @@ async fn main(spawner: Spawner) {
     let dmx3_dir = Output::new(p.PIN_11, Level::Low); // DMX3 DIR
     let dmx4_dir = Output::new(p.PIN_14, Level::Low); // DMX4 DIR
     
-    blink_stage(&mut led, 6).await; // Stage 6: DMX ready
+  
 
     // ========================================================================
     // Spawn Application Tasks
@@ -324,14 +427,6 @@ async fn main(spawner: Spawner) {
     info!("Web server tasks spawned (port 80)");
 
     info!("ArtNet node running! IP: 192.168.0.2, ArtNet: 6454, Web: 80");
-    
-    // Rapid blink to confirm main loop entered
-    for _ in 0..10 {
-        led.set_high();
-        Timer::after(Duration::from_millis(50)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(50)).await;
-    }
 
     // ========================================================================
     // Main Loop - heartbeat blink

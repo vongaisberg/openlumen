@@ -3,13 +3,15 @@
 //! Provides HTTP server and WebSocket support for configuration
 //! and real-time DMX data monitoring.
 
-use crate::artnet_task::{ARTNET_SOURCES, ARTNET_STATS};
+use crate::artnet_task::{ARTNET_NODE_CONFIG, ARTNET_SOURCES, ARTNET_STATS};
 use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG};
 use crate::schema::{
-    ArtnetConfig, DmxOutputUpdate, DmxPortConfig, DmxPortConfigUpdate, DmxPortOutput,
-    IpConfigType, NetworkConfig, OutputRate, SourceDevice, StateUpdate,
-    StateUpdateData, SystemInfo, TypedMessage,
+    self, ArtnetConfig, ArtnetConfigUpdate, ArtnetConfigUpdateItem, DmxOutputUpdate, DmxPortConfig,
+    DmxPortConfigUpdate, DmxPortOutput, IpConfigType, NetworkConfig, NetworkConfigUpdate,
+    NetworkConfigUpdateItem, OutputRate, SourceDevice, StateUpdate, StateUpdateData, SystemInfo,
+    TypedMessage,
 };
+use crate::storage;
 use defmt::*;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -21,73 +23,45 @@ use picoserve::{
     routing::{get, get_service},
     AppBuilder, AppRouter,
 };
-
 use {defmt_rtt as _, panic_probe as _};
 
 // Static buffers for JSON serialization
 static mut JSON_BUFFER: String<{ 1024 * 2 }> = String::new();
 static mut BUFFER: [u8; 1024] = [0; 1024];
 
+pub static NETWORK_NODE_CONFIG: Mutex<ThreadModeRawMutex, NetworkConfig> =
+    Mutex::new(NetworkConfig {
+        ip_config_type: IpConfigType::Static,
+        ip_address: Some([192, 168, 0, 2]),
+        subnet_mask: Some([255, 255, 255, 0]),
+        gateway: Some([192, 168, 0, 1]),
+        mac_address: String::new(), // Will be set at startup
+        current_ip_address: None,
+        current_subnet_mask: None,
+        current_gateway: None,
+        id: None,
+    });
+
 /// Get current configuration for web interface
-async fn get_config() -> (NetworkConfig, ArtnetConfig, Vec<DmxPortConfig, 4>, SystemInfo) {
+pub async fn get_config() -> (
+    NetworkConfig,
+    ArtnetConfig,
+    Vec<DmxPortConfig, 4>,
+    SystemInfo,
+) {
     let stats = ARTNET_STATS.lock().await;
-    let mut dmx_ports = Vec::new();
-    
-    let ports = DMX_PORT_CONFIG.lock().await;
-    let source_devices = ARTNET_SOURCES.lock().await;
-
-    for i in 0..4 {
-        let port = ports[i];
-        let port_sources = source_devices[i];
-        let mut source_devices_vec = Vec::new();
-
-        for source in port_sources {
-            if source.active {
-                let _ = source_devices_vec.push(SourceDevice {
-                    name: String::try_from(core::str::from_utf8(&source.name).unwrap_or("Unknown"))
-                        .unwrap_or_default(),
-                    ip: source.ip,
-                    packets_per_second: Some(source.frequency),
-                });
-            }
-        }
-
-        let _ = dmx_ports.push(DmxPortConfig {
-            id: None,
-            port_number: i as u8,
-            mode: port.mode,
-            universe: port.universe,
-            merge_mode: port.merge_mode,
-            output_rate: OutputRate::Hz44,
-            source_devices: source_devices_vec,
-        });
-    }
+    let dmx_ports = DMX_PORT_CONFIG.lock().await.clone();
 
     (
-        NetworkConfig {
-            id: None,
-            ip_config_type: IpConfigType::Static, // Using static IP for now
-            ip_address: Some([192, 168, 0, 2]),
-            subnet_mask: Some([255, 255, 255, 0]),
-            gateway: Some([192, 168, 0, 1]),
-            mac_address: String::try_from("02:00:DE:AD:BE:EF").unwrap_or_default(),
-            current_ip_address: Some([192, 168, 0, 2]),
-            current_subnet_mask: Some([255, 255, 255, 0]),
-            current_gateway: Some([192, 168, 0, 1]),
-        },
-        ArtnetConfig {
-            id: None,
-            net: 0,
-            subnet: 0,
-            device_name: String::try_from("RP2350 ArtNet Node").unwrap_or_default(),
-        },
-        dmx_ports,
+        NETWORK_NODE_CONFIG.lock().await.clone(),
+        ARTNET_NODE_CONFIG.lock().await.clone(),
+        Vec::from_slice(&dmx_ports).unwrap_or_default(),
         SystemInfo {
             id: None,
             firmware_version: [1, 0, 0],
             hardware_version: [2, 0, 0], // RP2350 hardware
-            uptime: 0, // TODO: Track actual uptime
-            temperature: 0, // TODO: Read from RP2350 temp sensor
+            uptime: 0,                   // TODO: Track actual uptime
+            temperature: 0,              // TODO: Read from RP2350 temp sensor
             artnet_traffic: stats.artdmx_count,
             packet_loss: stats.drop_rate,
             system_status: String::try_from("Running").unwrap_or_default(),
@@ -149,10 +123,10 @@ impl ws::WebSocketCallback for WebsocketServer {
 
         let close_reason = loop {
             let now = Instant::now();
-            let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(25) {
+            let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(100) {
                 Duration::from_millis(0)
             } else {
-                Duration::from_millis(25) - now.duration_since(last_send)
+                Duration::from_millis(100) - now.duration_since(last_send)
             };
 
             match select(
@@ -172,46 +146,162 @@ impl ws::WebSocketCallback for WebsocketServer {
                 }
                 Either::Second(Ok(ws::Message::Text(data))) => {
                     if let Ok(text) = core::str::from_utf8(data.as_bytes()) {
-                        debug!("Received WebSocket text: {}", text);
-                        
+                        let _ = tx.send_text("LOG: Websocket message received").await;
+
                         if let Ok((msg, _)) = serde_json_core::from_str::<TypedMessage>(text) {
+                            let _ = tx.send_text("LOG: Message parsed").await;
+                            let _ = tx.send_text(text).await;
                             match msg.type_ {
                                 "dmxPortConfigUpdate" => {
                                     if let Ok((update, _)) =
                                         serde_json_core::from_str::<DmxPortConfigUpdate>(text)
                                     {
+                                        let _ = tx
+                                            .send_text("LOG: DMX port configuration updated")
+                                            .await;
+
                                         let mut port_config = DMX_PORT_CONFIG.lock().await;
-                                        for port in update.data.iter() {
-                                            if port.port_number < 4 {
-                                                port_config[port.port_number as usize] =
-                                                    crate::artnet_task::DmxPortConfig {
-                                                    mode: port.mode,
-                                                    universe: port.universe,
-                                                    merge_mode: port.merge_mode,
-                                                };
+                                        for (i, port_update) in update.data.iter().enumerate() {
+                                            if i < 4 {
+                                                let single_port_config = &mut port_config[i];
+                                                single_port_config.mode = port_update.mode;
+                                                single_port_config.universe = port_update.universe;
+                                                single_port_config.merge_mode =
+                                                    port_update.merge_mode;
+                                                single_port_config.output_rate =
+                                                    port_update.output_rate;
                                             }
                                         }
                                         info!("Updated DMX port configuration");
+
+                                        // Save to flash
+                                        if let Err(_e) = storage::save_dmx_ports(&port_config) {
+                                            warn!("Failed to save DMX ports to flash");
+                                        } else {
+                                            info!("DMX ports saved to flash successfully");
+                                        }
+                                    }
+                                }
+                                "networkConfigUpdate" => {
+                                    match serde_json_core::from_str::<NetworkConfigUpdate>(text) {
+                                        Ok((update, _)) => {
+                                            let _ = tx
+                                                .send_text(
+                                                    "LOG: Network configuration update received",
+                                                )
+                                                .await;
+                                            // Update runtime network config
+                                            {
+                                                let mut network_config =
+                                                    NETWORK_NODE_CONFIG.lock().await;
+                                                network_config.ip_config_type =
+                                                    update.data.ip_config_type;
+                                                network_config.ip_address = update.data.ip_address;
+                                                network_config.subnet_mask =
+                                                    update.data.subnet_mask;
+                                                network_config.gateway = update.data.gateway;
+                                                // Note: mac_address and current_* fields are preserved (read-only)
+                                            }
+
+                                            // Convert update item to full NetworkConfig for flash storage
+                                            // Load current config to preserve read-only fields
+                                            let current_config = get_config().await.0;
+                                            let full_config = NetworkConfig {
+                                                id: current_config.id,
+                                                ip_config_type: update.data.ip_config_type,
+                                                ip_address: update.data.ip_address,
+                                                subnet_mask: update.data.subnet_mask,
+                                                gateway: update.data.gateway,
+                                                mac_address: current_config.mac_address, // Preserve read-only
+                                                current_ip_address: current_config
+                                                    .current_ip_address, // Preserve read-only
+                                                current_subnet_mask: current_config
+                                                    .current_subnet_mask, // Preserve read-only
+                                                current_gateway: current_config.current_gateway, // Preserve read-only
+                                            };
+
+                                            // Save to flash
+                                            if let Err(_e) =
+                                                storage::save_network_config(&full_config)
+                                            {
+                                                warn!("Failed to save network config to flash");
+                                            } else {
+                                                info!("Network configuration saved to flash");
+                                            }
+                                        }
+                                        Err(_e) => {
+                                            let _ = tx
+                                            .send_text("LOG: Network config parse error - check field names")
+                                            .await;
+                                            warn!("Failed to parse network config update");
+                                        }
+                                    }
+                                }
+                                "artnetConfigUpdate" => {
+                                    match serde_json_core::from_str::<ArtnetConfigUpdate>(text) {
+                                        Ok((update, _)) => {
+                                            let _ = tx
+                                                .send_text(
+                                                    "LOG: ArtNet configuration update received",
+                                                )
+                                                .await;
+                                            // Note: ArtNet config changes may require ArtNet task restart
+                                            // For now, we'll just save it to flash
+                                            // TODO: Apply ArtNet config changes at runtime
+
+                                            // Update runtime ArtNet config
+                                            {
+                                                let mut node_config =
+                                                    ARTNET_NODE_CONFIG.lock().await;
+                                                node_config.net = update.data.net;
+                                                node_config.subnet = update.data.subnet;
+                                                node_config.device_name =
+                                                    update.data.device_name.clone();
+                                            }
+
+                                            // Convert update item to full ArtnetConfig for flash storage
+                                            // Load current config to preserve read-only fields
+                                            let current_config = get_config().await.1;
+                                            let full_config = ArtnetConfig {
+                                                id: current_config.id, // Preserve read-only
+                                                net: update.data.net,
+                                                subnet: update.data.subnet,
+                                                device_name: update.data.device_name,
+                                            };
+
+                                            // Save to flash
+                                            if let Err(_e) =
+                                                storage::save_artnet_config(&full_config)
+                                            {
+                                                warn!("Failed to save ArtNet config to flash");
+                                            } else {
+                                                info!("ArtNet configuration saved to flash");
+                                            }
+                                        }
+                                        Err(_e) => {
+                                            let _ = tx
+                                            .send_text("LOG: ArtNet config parse error - check field names")
+                                            .await;
+                                            warn!("Failed to parse ArtNet config update");
+                                        }
                                     }
                                 }
                                 _ => {
                                     debug!("Unknown message type: {}", msg.type_);
-                                }   
+                                }
                             }
+                        } else {
+                            let _ = tx.send_text("LOG: Error, invalid message type").await;
                         }
                     }
                     tx.send_text(data).await?
                 }
-                Either::Second(Ok(ws::Message::Binary(data))) => {
-                    tx.send_binary(data).await?
-                }
+                Either::Second(Ok(ws::Message::Binary(_data))) => tx.send_binary(&[0; 0]).await?,
                 Either::Second(Ok(ws::Message::Close(reason))) => {
                     info!("WebSocket close: {}", reason);
                     break None;
                 }
-                Either::Second(Ok(ws::Message::Ping(data))) => {
-                    tx.send_pong(data).await?
-                }
+                Either::Second(Ok(ws::Message::Ping(data))) => tx.send_pong(data).await?,
                 Either::Second(Ok(ws::Message::Pong(_))) => {
                     continue;
                 }
@@ -298,14 +388,14 @@ async fn send_dmx_update<
     port: u8,
 ) {
     let mut dmx_outputs = Vec::new();
-    
+
     let dmx_buffer = DMX_BUFFER.lock().await;
-    
+
     let _ = dmx_outputs.push(DmxPortOutput {
         port_number: port,
         dmx_data: Vec::from_slice(&dmx_buffer[port as usize][1..513]).unwrap_or_default(),
     });
-    
+
     let update = DmxOutputUpdate {
         type_: "dmxOutputUpdate",
         data: dmx_outputs,
