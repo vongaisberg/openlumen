@@ -86,7 +86,7 @@ pub fn load_settings() -> Result<StoredSettings, StorageError> {
 
         // Check magic number
         if header.magic != SETTINGS_MAGIC {
-            return Err(StorageError::NotFound);
+            return Err(StorageError::InvalidMagic);
         }
 
         // Check version

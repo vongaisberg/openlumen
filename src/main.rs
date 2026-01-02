@@ -8,6 +8,7 @@ mod dmx_pio;
 mod dmx_task;
 mod schema;
 mod storage;
+//mod file_system;
 mod web_task;
 
 use artnet_task::artnet_task;
@@ -420,7 +421,7 @@ async fn main(spawner: Spawner) {
         .keep_connection_alive()
     );
 
-    // Spawn web server tasks (2 tasks for concurrent connections)
+    // Spawn web server tasks (4 tasks for concurrent connections)
     for id in 0..2 {
         spawner.spawn(web_task(id, *stack_ref, app, config).unwrap());
     }

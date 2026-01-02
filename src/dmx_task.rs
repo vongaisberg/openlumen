@@ -76,7 +76,7 @@ pub async fn send_dmx(
     let mut last_stats_time = Instant::now();
 
     // Default frame interval (1 Hz)
-    let default_interval = Duration::from_millis(1_000_000_000);
+    let default_interval = Duration::from_millis(1_000);
 
     // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
     // Full frame is ~23ms, we add 1ms gap minimum
@@ -90,7 +90,9 @@ pub async fn send_dmx(
         let frame_interval = {
             let config = DMX_PORT_CONFIG.lock().await;
 
-            rate_to_duration(config[0].output_rate)
+            //rate_to_duration(config[0].output_rate)
+            default_interval
+            
         };
 
         // Wait for either:
@@ -104,7 +106,7 @@ pub async fn send_dmx(
         };
 
         match embassy_futures::select::select(
-            DMX_NEW_DATA.wait(),
+           DMX_NEW_DATA.wait(),
             Timer::after(timeout),
         )
         .await
@@ -166,5 +168,5 @@ pub async fn send_dmx(
 /// # Arguments
 /// * `port_mask` - Bitmask of ports with new data (bit 0 = port 0, etc.)
 pub fn notify_new_data(port_mask: u8) {
-    DMX_NEW_DATA.signal(port_mask);
+        DMX_NEW_DATA.signal(port_mask);
 }

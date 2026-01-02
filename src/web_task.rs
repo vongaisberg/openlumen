@@ -123,10 +123,10 @@ impl ws::WebSocketCallback for WebsocketServer {
 
         let close_reason = loop {
             let now = Instant::now();
-            let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(100) {
+            let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(25) {
                 Duration::from_millis(0)
             } else {
-                Duration::from_millis(100) - now.duration_since(last_send)
+                Duration::from_millis(25) - now.duration_since(last_send)
             };
 
             match select(
@@ -324,9 +324,9 @@ impl ws::WebSocketCallback for WebsocketServer {
     }
 }
 
-const WEB_TASK_POOL_SIZE: usize = 2;
+const WEB_TASK_POOL_SIZE: usize = 2; // Increase this to match the number of tasks you spawn
 
-/// Web server task
+/// Web server task 
 #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
 pub async fn web_task(
     id: usize,
@@ -361,12 +361,27 @@ async fn send_state_update<
 ) {
     let (network_config, artnet_config, dmx_ports, system_info) = get_config().await;
 
+    let artnet_sources = ARTNET_SOURCES.lock().await;
+
+    let mut dmx_ports_with_sources: Vec<DmxPortConfig, 4> = dmx_ports.clone();
+    for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
+        port.source_devices = artnet_sources[i]
+            .iter()
+            .filter(|source| source.active)
+            .map(|source| SourceDevice {
+                name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
+                ip: source.ip,
+                packets_per_second: Some(source.frequency),
+            })
+            .collect();
+    }
+
     let status = StateUpdate {
         type_: "stateUpdate",
         data: StateUpdateData {
             network_config: Some(network_config),
             artnet_config: Some(artnet_config),
-            dmx_ports: Some(dmx_ports),
+            dmx_ports: Some(dmx_ports_with_sources),
             system_info: Some(system_info),
         },
     };
