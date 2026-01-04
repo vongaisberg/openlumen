@@ -7,6 +7,7 @@ use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
 use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG, notify_new_data};
+use crate::log;
 use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode, PortMode};
 use defmt::*;
 use embassy_futures::yield_now;
@@ -78,6 +79,7 @@ pub static ARTNET_NODE_CONFIG: Mutex<ThreadModeRawMutex, ArtnetConfig> =
 /// ArtNet receiver task
 #[embassy_executor::task]
 pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
+    log::log("[ARTNET] ArtNet task starting").await;
     // Use smaller buffers matching embassy examples
     let mut rx_buffer = [0; 2048];
     let mut tx_buffer = [0; 1024];
@@ -93,7 +95,8 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
     );
 
     if let Err(e) = socket.bind(6454) {
-        error!("Failed to bind ArtNet socket: {:?}", e);
+        log::log("[ARTNET] Failed to bind ArtNet socket").await;
+        log::log_debug(&e).await;
         loop {
             yield_now().await;
         }

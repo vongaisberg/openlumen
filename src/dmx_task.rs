@@ -18,7 +18,7 @@ use heapless::Vec;
 use crate::schema::DmxPortConfig;
 use crate::dmx_pio::{DmxOutputs, DMX_FRAME_SIZE};
 use crate::schema::OutputRate;
-use crate::web_task;
+use crate::{log, web_task};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -69,7 +69,7 @@ pub async fn send_dmx(
     mut dmx3_dir: Output<'static>,
     mut dmx4_dir: Output<'static>,
 ) {
-    info!("DMX task started");
+    log::log("[DMX] DMX task started").await;
 
     // Statistics tracking
     let mut frame_count: u32 = 0;

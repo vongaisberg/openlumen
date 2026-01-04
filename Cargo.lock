@@ -43,6 +43,7 @@ dependencies = [
  "heapless 0.8.0",
  "itoa",
  "littlefs2",
+ "littlefs2-core",
  "panic-probe",
  "picoserve",
  "pio 0.2.1",

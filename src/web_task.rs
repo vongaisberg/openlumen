@@ -5,6 +5,7 @@
 
 use crate::artnet_task::{ARTNET_NODE_CONFIG, ARTNET_SOURCES, ARTNET_STATS};
 use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG};
+use crate::log::{self, get_logs, serve_logs};
 use crate::schema::{
     self, ArtnetConfig, ArtnetConfigUpdate, ArtnetConfigUpdateItem, DmxOutputUpdate, DmxPortConfig,
     DmxPortConfigUpdate, DmxPortOutput, IpConfigType, NetworkConfig, NetworkConfigUpdate,
@@ -29,13 +30,14 @@ use {defmt_rtt as _, panic_probe as _};
 static mut JSON_BUFFER: String<{ 1024 * 2 }> = String::new();
 static mut BUFFER: [u8; 1024] = [0; 1024];
 
+/// Runtime network configuration. Will be set at startup.
 pub static NETWORK_NODE_CONFIG: Mutex<ThreadModeRawMutex, NetworkConfig> =
     Mutex::new(NetworkConfig {
         ip_config_type: IpConfigType::Static,
         ip_address: Some([192, 168, 0, 2]),
         subnet_mask: Some([255, 255, 255, 0]),
         gateway: Some([192, 168, 0, 1]),
-        mac_address: String::new(), // Will be set at startup
+        mac_address: [0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF],
         current_ip_address: None,
         current_subnet_mask: None,
         current_gateway: None,
@@ -105,6 +107,8 @@ impl AppBuilder for Webinterface {
                         .with_protocol("artnet-node")
                 }),
             )
+            .route("/logs",
+        get(serve_logs))
     }
 }
 
@@ -175,11 +179,11 @@ impl ws::WebSocketCallback for WebsocketServer {
                                         info!("Updated DMX port configuration");
 
                                         // Save to flash
-                                        if let Err(_e) = storage::save_dmx_ports(&port_config) {
-                                            warn!("Failed to save DMX ports to flash");
-                                        } else {
-                                            info!("DMX ports saved to flash successfully");
-                                        }
+                                        //if let Err(_e) = storage::save_dmx_ports(&port_config) {
+                                        //    warn!("Failed to save DMX ports to flash");
+                                        //} else {
+                                        //    info!("DMX ports saved to flash successfully");
+                                        //}
                                     }
                                 }
                                 "networkConfigUpdate" => {
@@ -221,13 +225,13 @@ impl ws::WebSocketCallback for WebsocketServer {
                                             };
 
                                             // Save to flash
-                                            if let Err(_e) =
-                                                storage::save_network_config(&full_config)
-                                            {
-                                                warn!("Failed to save network config to flash");
-                                            } else {
-                                                info!("Network configuration saved to flash");
-                                            }
+                                            //if let Err(_e) =
+                                            //    storage::save_network_config(&full_config)
+                                            //{
+                                            //    warn!("Failed to save network config to flash");
+                                            //} else {
+                                            //    info!("Network configuration saved to flash");
+                                            //}
                                         }
                                         Err(_e) => {
                                             let _ = tx
@@ -270,13 +274,13 @@ impl ws::WebSocketCallback for WebsocketServer {
                                             };
 
                                             // Save to flash
-                                            if let Err(_e) =
-                                                storage::save_artnet_config(&full_config)
-                                            {
-                                                warn!("Failed to save ArtNet config to flash");
-                                            } else {
-                                                info!("ArtNet configuration saved to flash");
-                                            }
+                                            //if let Err(_e) =
+                                            //    storage::save_artnet_config(&full_config)
+                                            //{
+                                            //    warn!("Failed to save ArtNet config to flash");
+                                            //} else {
+                                            //    info!("ArtNet configuration saved to flash");
+                                            //}
                                         }
                                         Err(_e) => {
                                             let _ = tx
@@ -334,6 +338,7 @@ pub async fn web_task(
     app: &'static AppRouter<Webinterface>,
     config: &'static picoserve::Config<Duration>,
 ) -> ! {
+    log::log("[WEB] Web task started").await;
     let port = 80;
     let mut tcp_rx_buffer = [0; 1024];
     let mut tcp_tx_buffer = [0; 1024];

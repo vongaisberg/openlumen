@@ -8,7 +8,7 @@ edition = "2021"
 embassy-rp = { path = "/home/max/git/embassy/embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
 embassy-executor = { path = "/home/max/git/embassy/embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { path = "/home/max/git/embassy/embassy-time", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-net = { path = "/home/max/git/embassy/embassy-net", features = ["defmt", "udp", "dhcpv4", "medium-ethernet", "tcp", "icmp"] }
+embassy-net = { path = "/home/max/git/embassy/embassy-net", features = ["defmt", "udp", "dhcpv4", "medium-ethernet", "tcp", "icmp", "dhcpv4-hostname"] }
 embassy-net-wiznet = { path = "/home/max/git/embassy/embassy-net-wiznet", features = ["defmt"] }
 embassy-sync = { path = "/home/max/git/embassy/embassy-sync", features = ["defmt"] }
 embassy-futures = { path = "/home/max/git/embassy/embassy-futures" }
@@ -48,6 +48,7 @@ rand_core = "0.6"
 fixed = "1.28"
 fixed-macro = "1.2"
 littlefs2 = "0.6.1"
+littlefs2-core = {version = "0.1.2", features= ["debug-error"]}
 typenum = "1.19.0"
 
 [profile.release]

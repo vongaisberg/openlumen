@@ -6,20 +6,23 @@ mod artnet;
 mod artnet_task;
 mod dmx_pio;
 mod dmx_task;
+mod log;
 mod schema;
 mod storage;
-//mod file_system;
 mod web_task;
 
+use crate::storage::file_system;
+use crate::storage::flash_storage_adapter::FlashStorage;
+use crate::web_task::NETWORK_NODE_CONFIG;
 use artnet_task::artnet_task;
-use dmx_task::DMX_PORT_CONFIG;
 use defmt::*;
 use dmx_pio::DmxOutputs;
 use dmx_task::send_dmx;
+use dmx_task::DMX_PORT_CONFIG;
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
-use embassy_rp::clocks::RoscRng;
 use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{InterruptHandler, Pio};
@@ -27,9 +30,11 @@ use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use heapless::{String, Vec};
+use littlefs2::fs::{Allocation, Filesystem};
 use picoserve::{make_static, AppBuilder, AppRouter};
 use static_cell::StaticCell;
 use web_task::{web_task, Webinterface};
+
 use {defmt_rtt as _, panic_probe as _};
 
 // Bind interrupts for PIO
@@ -128,15 +133,13 @@ type SpiDevice = ExclusiveDevice<
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("ArtNet Node starting on RP2350...");
+    log::log("[MAIN] ArtNet Node starting on RP2350...").await;
 
     // Initialize RP2350 peripherals
     let p = embassy_rp::init(Default::default());
-    info!("RP2350 initialized");
 
     // LED for status indication
     let mut led = Output::new(p.PIN_25, Level::Low);
-    
     // Blink pattern helper: number of blinks indicates progress stage
     async fn blink_stage(led: &mut Output<'_>, count: u32) {
         for _ in 0..count {
@@ -147,55 +150,14 @@ async fn main(spawner: Spawner) {
         }
         Timer::after(Duration::from_millis(450)).await;
     }
-    
-    //blink_stage(&mut led, 1).await; // Stage 1: Starting W5500 setup
 
     // ========================================================================
     // Load Settings from Flash
     // ========================================================================
-    
-    info!("Loading settings from flash...");
-    let stored_settings = match storage::load_settings() {
-        Ok(settings) => {
-            info!("Settings loaded from flash successfully");
-            Some(settings)
-        }
-        Err(e) => {
-            warn!("Failed to load settings from flash: {:?}, using defaults", e);
-            None
-        }
-    };
-    
-    // Apply DMX port configurations if loaded
-    if let Some(ref settings) = stored_settings {
-        let mut port_config = DMX_PORT_CONFIG.lock().await;
-        for (i, port) in settings.dmx_ports.iter().enumerate() {
-            if i < 4 {
-                port_config[i] = port.clone();
-            }
-        }
-        info!("Applied DMX port configurations from flash");
-        
-        // Apply ArtNet configuration if loaded
-        let mut artnet_config = crate::artnet_task::ARTNET_NODE_CONFIG.lock().await;
-        artnet_config.net = settings.artnet_config.net;
-        artnet_config.subnet = settings.artnet_config.subnet;
-        artnet_config.device_name = settings.artnet_config.device_name.clone();
-        info!("Applied ArtNet configuration from flash");
-        
-        // Apply network configuration if loaded
-        let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
-        network_config.ip_config_type = settings.network_config.ip_config_type;
-        network_config.ip_address = settings.network_config.ip_address;
-        network_config.subnet_mask = settings.network_config.subnet_mask;
-        network_config.gateway = settings.network_config.gateway;
-        network_config.mac_address = settings.network_config.mac_address.clone();
-        info!("Applied network configuration from flash");
-    } else {
-        // Set default network config in runtime storage
-        let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
-        network_config.mac_address = String::try_from("02:00:DE:AD:BE:EF").unwrap_or_default();
-    }
+    spawner.spawn(file_system::file_system_task(p.FLASH, p.DMA_CH2).unwrap());
+
+    // Wait for file system task to finish
+    Timer::after(Duration::from_millis(10)).await;
 
     // ========================================================================
     // W5500 Ethernet Setup
@@ -206,13 +168,10 @@ async fn main(spawner: Spawner) {
     spi_cfg.frequency = 50_000_000;
 
     let spi = Spi::new(
-        p.SPI0,
-        p.PIN_18, // SCK
+        p.SPI0, p.PIN_18, // SCK
         p.PIN_19, // MOSI
         p.PIN_16, // MISO
-        p.DMA_CH0,
-        p.DMA_CH1,
-        spi_cfg,
+        p.DMA_CH0, p.DMA_CH1, spi_cfg,
     );
 
     let cs = Output::new(p.PIN_17, Level::High);
@@ -223,29 +182,28 @@ async fn main(spawner: Spawner) {
     // Create SPI device with delay for proper CS timing
     let spi_device = ExclusiveDevice::new(spi, cs, Delay).unwrap();
 
-    // MAC address
-    let mac_addr = [0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-    info!(
-        "MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]
-    );
-
     // W5500 state - 8 sockets for RX/TX
     static STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
     let state = STATE.init(embassy_net_wiznet::State::<8, 8>::new());
 
-    
     // Create W5500 device and runner
-    info!("Initializing W5500...");
-    let (device, runner) = match embassy_net_wiznet::new(mac_addr, state, spi_device, w5500_int, w5500_rst).await {
+    let (device, runner) = match embassy_net_wiznet::new(
+        [0x02, 0xD5, 0x12, 0x00, 0x00, 0x01],
+        state,
+        spi_device,
+        w5500_int,
+        w5500_rst,
+    )
+    .await
+    {
         Ok((d, r)) => {
-            info!("W5500 initialized successfully!");
+            log::log("[MAIN] W5500 initialized successfully!").await;
             (d, r)
         }
         Err(_) => {
-            error!("W5500 initialization failed!");
+            
             loop {
-                led.toggle();
+               led.toggle();
                 Timer::after(Duration::from_millis(50)).await; // Fast blink = error
             }
         }
@@ -262,53 +220,50 @@ async fn main(spawner: Spawner) {
             Output<'static>,
         >,
     ) -> ! {
+        log::log("[W5500] W5500 Ethernet driver started").await;
         runner.run().await
     }
     spawner.spawn(w5500_task(runner).unwrap());
-    info!("W5500 Ethernet driver started");
+
 
     // ========================================================================
     // Network Stack Setup
     // ========================================================================
 
     // Use network config from flash if available, otherwise use defaults
-    let net_config = if let Some(ref settings) = stored_settings {
-        match settings.network_config.ip_config_type {
-            crate::schema::IpConfigType::Static => {
-                if let (Some(ip), Some(subnet), Some(gateway)) = (
-                    settings.network_config.ip_address,
-                    settings.network_config.subnet_mask,
-                    settings.network_config.gateway,
-                ) {
-                    // Calculate subnet prefix length from subnet mask
-                    let prefix_len = subnet_mask_to_prefix_len(subnet);
-                    info!(
-                        "Using network config from flash: {}.{}.{}.{}/{}",
-                        ip[0], ip[1], ip[2], ip[3], prefix_len
-                    );
-                    embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-                        address: Ipv4Cidr::new(Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]), prefix_len),
-                        dns_servers: Vec::new(),
-                        gateway: Some(Ipv4Address::new(gateway[0], gateway[1], gateway[2], gateway[3])),
-                    })
-                } else {
-                    warn!("Incomplete network config in flash, using defaults");
-                    get_default_net_config()
-                }
-            }
-            crate::schema::IpConfigType::Dhcp => {
-                info!("Using DHCP from flash settings");
-                // Note: DHCP support may require additional embassy-net features
-                // For now, fall back to static config
-                warn!("DHCP not fully supported, using defaults");
+    let network_config = NETWORK_NODE_CONFIG.lock().await.clone();
+    let net_config = match network_config.ip_config_type {
+        crate::schema::IpConfigType::Static => {
+            if let (Some(ip), Some(subnet), Some(gateway)) = (
+                network_config.ip_address,
+                network_config.subnet_mask,
+                network_config.gateway,
+            ) {
+                // Calculate subnet prefix length from subnet mask
+                let prefix_len = subnet_mask_to_prefix_len(subnet);
+                embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+                    address: Ipv4Cidr::new(
+                        Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]),
+                        prefix_len,
+                    ),
+                    dns_servers: Vec::new(),
+                    gateway: Some(Ipv4Address::new(
+                        gateway[0], gateway[1], gateway[2], gateway[3],
+                    )),
+                })
+            } else {
+                log::log("[MAIN] Incomplete network config in flash, using defaults").await;
                 get_default_net_config()
             }
         }
-    } else {
-        // Default static IP configuration
-        info!("Using default network configuration");
-        get_default_net_config()
+        crate::schema::IpConfigType::Dhcp => {
+            
+            let mut dhcp_config = embassy_net::DhcpConfig::default();
+            dhcp_config.hostname = Some(String::try_from("DMX512 ArtNet Node").unwrap_or_default());
+            embassy_net::Config::dhcpv4(dhcp_config)
+        }
     };
+
 
     // Proper random seed using ring oscillator
     let mut rng = RoscRng;
@@ -327,23 +282,21 @@ async fn main(spawner: Spawner) {
     async fn stack_task(
         mut runner: embassy_net::Runner<'static, embassy_net_wiznet::Device<'static>>,
     ) -> ! {
+        log::log("[NETWORK] Network stack started").await;
         runner.run().await
     }
     spawner.spawn(stack_task(net_runner).unwrap());
 
     // Wait for network config
-    info!("Waiting for network config...");
+    log::log("[MAIN] Waiting for network config...").await;
     stack.wait_config_up().await;
     if let Some(config) = stack.config_v4() {
         let ip = config.address.address().octets();
         let prefix = config.address.prefix_len();
         let gateway = config.gateway.map(|g| g.octets());
-        
-        info!(
-            "IP: {}.{}.{}.{}",
-            ip[0], ip[1], ip[2], ip[3]
-        );
-        
+        log::log("[MAIN] Network config up").await;
+        log::log_debug(&ip).await;
+
         // Update runtime network config with actual current values
         let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
         network_config.current_ip_address = Some(ip);
@@ -360,12 +313,12 @@ async fn main(spawner: Spawner) {
 
     static STACK: StaticCell<Stack<'static>> = StaticCell::new();
     let stack_ref = STACK.init(stack);
-    
+
 
     // ========================================================================
     // DMX PIO Setup
     // ========================================================================
-    
+
     let Pio {
         mut common,
         sm0,
@@ -386,26 +339,23 @@ async fn main(spawner: Spawner) {
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
     );
-    info!("PIO DMX outputs initialized (all 4 SMs)");
+    log::log("[MAIN] PIO DMX outputs initialized (all 4 SMs)").await;
 
     // Individual DIR pins for each DMX output (RS485 TX enable)
-    let dmx1_dir = Output::new(p.PIN_5, Level::Low);  // DMX1 DIR
-    let dmx2_dir = Output::new(p.PIN_8, Level::Low);  // DMX2 DIR
+    let dmx1_dir = Output::new(p.PIN_5, Level::Low); // DMX1 DIR
+    let dmx2_dir = Output::new(p.PIN_8, Level::Low); // DMX2 DIR
     let dmx3_dir = Output::new(p.PIN_11, Level::Low); // DMX3 DIR
     let dmx4_dir = Output::new(p.PIN_14, Level::Low); // DMX4 DIR
-    
-  
+
 
     // ========================================================================
     // Spawn Application Tasks
     // ========================================================================
 
-    spawner.spawn(artnet_task(stack_ref, mac_addr).unwrap());
-    info!("ArtNet task spawned");
+    spawner.spawn(artnet_task(stack_ref, network_config.mac_address.clone()).unwrap());
 
     spawner.spawn(send_dmx(dmx_outputs, dmx1_dir, dmx2_dir, dmx3_dir, dmx4_dir).unwrap());
-    info!("DMX task spawned");
-
+    
     // ========================================================================
     // Web Server Setup
     // ========================================================================
@@ -425,20 +375,22 @@ async fn main(spawner: Spawner) {
     for id in 0..2 {
         spawner.spawn(web_task(id, *stack_ref, app, config).unwrap());
     }
-    info!("Web server tasks spawned (port 80)");
+    
 
-    info!("ArtNet node running! IP: 192.168.0.2, ArtNet: 6454, Web: 80");
+    log::log("[MAIN] ArtNet node running!").await;
+
+
 
     // ========================================================================
     // Main Loop - heartbeat blink
     // ========================================================================
-    
+
     info!("Entering main loop...");
     loop {
-        // Long heartbeat - LED on for 500ms every 2 seconds
+        // Long heartbeat - Blink every second
         led.set_high();
-        Timer::after(Duration::from_millis(500)).await;
+        Timer::after(Duration::from_millis(250)).await;
         led.set_low();
-        Timer::after(Duration::from_millis(1500)).await;
+        Timer::after(Duration::from_millis(750)).await;
     }
 }

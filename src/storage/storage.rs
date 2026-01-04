@@ -11,12 +11,13 @@ use serde::{Deserialize, Serialize};
 const SETTINGS_MAGIC: u32 = 0x4152544E; // "ARTN" in ASCII
 const SETTINGS_VERSION: u8 = 1;
 
-/// Flash storage location - last 4KB sector of flash
+/// Flash storage location - last 16KB sector of flash
 /// RP2350 flash starts at 0x10000000, typically 2MB or 4MB
-/// We use the last sector (4096 bytes) for settings
+/// We use the last 16KB (16384 bytes) for settings
 const FLASH_BASE: u32 = 0x10000000;
 const FLASH_SIZE: u32 = 2 * 1024 * 1024; // 2MB default
-const SETTINGS_OFFSET: u32 = FLASH_SIZE - 4096; // Last 4KB sector
+const SETTINGS_SIZE: u32 = 16 * 1024; // 16KB
+const SETTINGS_OFFSET: u32 = FLASH_SIZE - SETTINGS_SIZE; // Last 16KB sector
 const SETTINGS_ADDR: *const u8 = (FLASH_BASE + SETTINGS_OFFSET) as *const u8;
 
 /// Consolidated settings structure stored in flash
