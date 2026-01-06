@@ -20,6 +20,7 @@ use dmx_pio::DmxOutputs;
 use dmx_task::send_dmx;
 use dmx_task::DMX_PORT_CONFIG;
 use embassy_executor::Spawner;
+use embassy_futures::yield_now;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
@@ -133,7 +134,7 @@ type SpiDevice = ExclusiveDevice<
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    log::log("[MAIN] ArtNet Node starting on RP2350...").await;
+    log!("[MAIN] ArtNet Node starting on RP2350...").await;
 
     // Initialize RP2350 peripherals
     let p = embassy_rp::init(Default::default());
@@ -197,7 +198,7 @@ async fn main(spawner: Spawner) {
     .await
     {
         Ok((d, r)) => {
-            log::log("[MAIN] W5500 initialized successfully!").await;
+            log!("[MAIN] W5500 initialized successfully!").await;
             (d, r)
         }
         Err(_) => {
@@ -220,7 +221,7 @@ async fn main(spawner: Spawner) {
             Output<'static>,
         >,
     ) -> ! {
-        log::log("[W5500] W5500 Ethernet driver started").await;
+        log!("[W5500] Ethernet driver started").await;
         runner.run().await
     }
     spawner.spawn(w5500_task(runner).unwrap());
@@ -252,7 +253,7 @@ async fn main(spawner: Spawner) {
                     )),
                 })
             } else {
-                log::log("[MAIN] Incomplete network config in flash, using defaults").await;
+                log!("[MAIN] Incomplete network config in flash, using defaults").await;
                 get_default_net_config()
             }
         }
@@ -282,20 +283,19 @@ async fn main(spawner: Spawner) {
     async fn stack_task(
         mut runner: embassy_net::Runner<'static, embassy_net_wiznet::Device<'static>>,
     ) -> ! {
-        log::log("[NETWORK] Network stack started").await;
+        log!("[NETWORK] Network stack started").await;
         runner.run().await
     }
     spawner.spawn(stack_task(net_runner).unwrap());
 
     // Wait for network config
-    log::log("[MAIN] Waiting for network config...").await;
+    log!("[MAIN] Waiting for network config...").await;
     stack.wait_config_up().await;
     if let Some(config) = stack.config_v4() {
         let ip = config.address.address().octets();
         let prefix = config.address.prefix_len();
         let gateway = config.gateway.map(|g| g.octets());
-        log::log("[MAIN] Network config up").await;
-        log::log_debug(&ip).await;
+        log!("[MAIN] Network config up: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]).await;
 
         // Update runtime network config with actual current values
         let mut network_config = crate::web_task::NETWORK_NODE_CONFIG.lock().await;
@@ -339,7 +339,7 @@ async fn main(spawner: Spawner) {
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
     );
-    log::log("[MAIN] PIO DMX outputs initialized (all 4 SMs)").await;
+    log!("[MAIN] PIO DMX outputs initialized (all 4 SMs)").await;
 
     // Individual DIR pins for each DMX output (RS485 TX enable)
     let dmx1_dir = Output::new(p.PIN_5, Level::Low); // DMX1 DIR
@@ -376,8 +376,8 @@ async fn main(spawner: Spawner) {
         spawner.spawn(web_task(id, *stack_ref, app, config).unwrap());
     }
     
-
-    log::log("[MAIN] ArtNet node running!").await;
+    yield_now().await;
+    log!("[MAIN] ArtNet node running!").await;
 
 
 

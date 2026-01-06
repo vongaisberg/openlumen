@@ -5,14 +5,14 @@
 
 use crate::artnet_task::{ARTNET_NODE_CONFIG, ARTNET_SOURCES, ARTNET_STATS};
 use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG};
-use crate::log::{self, get_logs, serve_logs};
+use crate::log::{get_logs, serve_logs};
 use crate::schema::{
     self, ArtnetConfig, ArtnetConfigUpdate, ArtnetConfigUpdateItem, DmxOutputUpdate, DmxPortConfig,
     DmxPortConfigUpdate, DmxPortOutput, IpConfigType, NetworkConfig, NetworkConfigUpdate,
     NetworkConfigUpdateItem, OutputRate, SourceDevice, StateUpdate, StateUpdateData, SystemInfo,
     TypedMessage,
 };
-use crate::storage;
+use crate::storage::{self, file_system};
 use defmt::*;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -25,6 +25,7 @@ use picoserve::{
     AppBuilder, AppRouter,
 };
 use {defmt_rtt as _, panic_probe as _};
+use crate::log;
 
 // Static buffers for JSON serialization
 static mut JSON_BUFFER: String<{ 1024 * 2 }> = String::new();
@@ -62,7 +63,7 @@ pub async fn get_config() -> (
             id: None,
             firmware_version: [1, 0, 0],
             hardware_version: [2, 0, 0], // RP2350 hardware
-            uptime: 0,                   // TODO: Track actual uptime
+            uptime: Instant::now().as_secs() as u32,                   // TODO: Track actual uptime
             temperature: 0,              // TODO: Read from RP2350 temp sensor
             artnet_traffic: stats.artdmx_count,
             packet_loss: stats.drop_rate,
@@ -184,6 +185,7 @@ impl ws::WebSocketCallback for WebsocketServer {
                                         //} else {
                                         //    info!("DMX ports saved to flash successfully");
                                         //}
+                                        file_system::save_config();
                                     }
                                 }
                                 "networkConfigUpdate" => {
@@ -224,14 +226,7 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                 current_gateway: current_config.current_gateway, // Preserve read-only
                                             };
 
-                                            // Save to flash
-                                            //if let Err(_e) =
-                                            //    storage::save_network_config(&full_config)
-                                            //{
-                                            //    warn!("Failed to save network config to flash");
-                                            //} else {
-                                            //    info!("Network configuration saved to flash");
-                                            //}
+                                            file_system::save_and_reboot();
                                         }
                                         Err(_e) => {
                                             let _ = tx
@@ -273,14 +268,7 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                 device_name: update.data.device_name,
                                             };
 
-                                            // Save to flash
-                                            //if let Err(_e) =
-                                            //    storage::save_artnet_config(&full_config)
-                                            //{
-                                            //    warn!("Failed to save ArtNet config to flash");
-                                            //} else {
-                                            //    info!("ArtNet configuration saved to flash");
-                                            //}
+                                            file_system::save_config();
                                         }
                                         Err(_e) => {
                                             let _ = tx
@@ -338,7 +326,7 @@ pub async fn web_task(
     app: &'static AppRouter<Webinterface>,
     config: &'static picoserve::Config<Duration>,
 ) -> ! {
-    log::log("[WEB] Web task started").await;
+    log!("[WEB] Web task {} started", id).await;
     let port = 80;
     let mut tcp_rx_buffer = [0; 1024];
     let mut tcp_tx_buffer = [0; 1024];

@@ -1,6 +1,7 @@
 use embassy_rp::{gpio::Output, rom_data, Peri};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
 
+use core::fmt::Write;
 use embassy_time::{block_for, Duration, Timer};
 use heapless::{String, Vec};
 use littlefs2::{
@@ -12,12 +13,13 @@ use littlefs2_core::{Error, Path, SeekFrom};
 use crate::{
     artnet_task::ARTNET_NODE_CONFIG,
     dmx_task::DMX_PORT_CONFIG,
-    log::{self, try_log, try_log_debug},
-    schema::{SETTINGS_VERSION, StoredSettings},
+    schema::{StoredSettings, SETTINGS_VERSION},
     storage::flash_storage_adapter::FlashStorage,
+    try_log,
     web_task::NETWORK_NODE_CONFIG,
 };
 
+use crate::log;
 #[derive(PartialEq, Eq)]
 pub enum SettingsStoreSignal {
     Save,
@@ -32,7 +34,7 @@ pub async fn file_system_task(
     flash: Peri<'static, embassy_rp::peripherals::FLASH>,
     dma: Peri<'static, embassy_rp::peripherals::DMA_CH2>,
 ) {
-    log::log("[STORAGE] File system task starting").await;
+    log!("[FLASH] File system task starting").await;
     let mut storage = crate::storage::flash_storage_adapter::FlashStorage::new(
         embassy_rp::flash::Flash::new(flash, dma),
     );
@@ -44,8 +46,7 @@ pub async fn file_system_task(
         Err(_) => {
             // Mount failed, format the filesystem
             if let Err(e) = Filesystem::format(&mut storage) {
-                try_log("[STORAGE] Failed to format filesystem");
-                try_log_debug(&e);
+                try_log!("[FLASH] Failed to format filesystem, error: {:?}", e);
                 return; // Exit if format fails
             }
 
@@ -53,15 +54,16 @@ pub async fn file_system_task(
             match Filesystem::mount(&mut alloc, &mut storage) {
                 Ok(fs) => fs,
                 Err(e) => {
-                    try_log("[STORAGE] Failed to mount filesystem");
-                    try_log_debug(&e);
+                    try_log!("[FLASH] Failed to mount filesystem, error: {:?}", e);
                     return; // Exit if mount fails after format
                 }
             }
         }
     };
-    try_log("[STORAGE] Filesystem mounted successfully. Free space:");
-    try_log_debug(&fs.available_space().unwrap());
+    try_log!(
+        "[FLASH] Filesystem mounted successfully. Free space: {}",
+        fs.available_space().unwrap()
+    );
 
     load_settings(&fs).await;
 
@@ -86,17 +88,23 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
         |file| {
             // Check if file exists
             if file.is_empty().unwrap_or(true) {
-                try_log("[STORAGE] Settings file does not exist. Creating default settings.");
                 let length =
                     serde_json_core::to_slice(&StoredSettings::default(), &mut buffer).unwrap();
-                try_log_debug(&length);
+                try_log!(
+                    "[FLASH] Settings file does not exist. Creating default settings. Length: {}",
+                    length
+                );
+                let mut buffer_vec: Vec<u8, 100> = Vec::new();
+                for i in 0..100 {
+                    buffer_vec.push(buffer[i]);
+                }
+                try_log!("{}", &String::from_utf8(buffer_vec).unwrap());
                 match file.write(&buffer[0..length]) {
                     Ok(_) => {
-                        try_log("[STORAGE] Settings file created successfully.");
+                        try_log!("[FLASH] Settings file created successfully.");
                     }
                     Err(e) => {
-                        try_log("[STORAGE] Failed to create settings file.");
-                        try_log_debug(&e);
+                        try_log!("[FLASH] Failed to create settings file. Error: {:?}", e);
                     }
                 }
             }
@@ -105,8 +113,10 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     ) {
         Ok(_) => {}
         Err(e) => {
-            try_log("[STORAGE] Failed to check existence of settings file.");
-            try_log_debug(&e);
+            try_log!(
+                "[FLASH] Failed to check existence of settings file. Error: {:?}",
+                e
+            );
         }
     }
 
@@ -117,14 +127,18 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
         |options| options.read(true).write(false).create(false),
         SETTINGS_PATH,
         |file| {
-            try_log("[STORAGE] Reading settings from filesystem");
-            let length = file.read(&mut buffer).unwrap();
+            let length = file.len().unwrap();
+            try_log!(
+                "[FLASH] Reading settings from filesystem. Length: {}",
+                length
+            );
 
-            try_log_debug(&file.len().unwrap());
+            file.read(&mut buffer[0..length]).unwrap();
+            log_until_null(&buffer[0..length]);
 
             match serde_json_core::from_slice::<StoredSettings>(&buffer[0..length]) {
                 Ok((settings, _)) => {
-                    try_log("[STORAGE] Loading settings from filesystem");
+                    
                     DMX_PORT_CONFIG
                         .try_lock()
                         .unwrap()
@@ -137,16 +151,14 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
                         .try_lock()
                         .unwrap()
                         .clone_from(&settings.network_config);
+                    try_log!("[FLASH] Settings version {} loaded from filesystem", settings.version);
                 }
                 Err(e) => {
-                    try_log("[STORAGE] Failed to load settings from filesystem");
-                    try_log_debug(&e);
-                    // first 100 byte of buffer to string
-                    let mut buffer_vec: Vec<u8, 100> = Vec::new();
-                    for i in 0..100 {
-                        buffer_vec.push(buffer[i]);
-                    }
-                    try_log(&String::from_utf8(buffer_vec).unwrap());
+                    try_log!(
+                        "[FLASH] Failed to load settings from filesystem, error: {:?}",
+                        e
+                    );
+                    log_until_null(&buffer[0..length]);
                 }
             }
 
@@ -157,8 +169,8 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     );
 }
 
-pub async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
-    try_log("[STORAGE] Saving settings to filesystem");
+async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
+    try_log!("[FLASH] Saving settings to filesystem");
 
     let mut buffer = [0u8; 1024];
 
@@ -168,14 +180,53 @@ pub async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
         network_config: NETWORK_NODE_CONFIG.try_lock().unwrap().clone(),
         artnet_config: ARTNET_NODE_CONFIG.try_lock().unwrap().clone(),
     };
-    serde_json_core::to_slice(&settings, &mut buffer).unwrap();
-    fs.open_file_with_options_and_then(
+    let length = serde_json_core::to_slice(&settings, &mut buffer).unwrap();
+
+    fs.remove(SETTINGS_PATH).unwrap();
+
+    match fs.open_file_with_options_and_then(
         |options| options.read(true).write(true).create(true),
         SETTINGS_PATH,
         |file| {
-            file.write(&buffer);
+            match file.write(&buffer[0..length]) {
+                Ok(_) => {
+                    try_log!("[FLASH] Settings saved to filesystem");
+                }
+                Err(e) => {
+                    try_log!("[FLASH] Failed to save settings to filesystem, error: {:?}", e);
+                }
+            }
             Ok(())
         },
-    );
-    try_log("[STORAGE] Settings saved to filesystem");
+    ) {
+        Ok(_) => {
+            
+        }
+        Err(e) => {
+            try_log!("[FLASH] Failed to save settings to filesystem, error: {:?}", e);
+        }
+    }
+}
+
+pub fn save_config() {
+    SETTINGS_STORE_SIGNAL.signal(SettingsStoreSignal::Save);
+}
+
+pub fn save_and_reboot() {
+    SETTINGS_STORE_SIGNAL.signal(SettingsStoreSignal::SaveAndReboot);
+}
+
+fn log_until_null(buffer: &[u8]) {
+    let mut buffer_vec: Vec<u8, 100> = Vec::new();
+    for i in 0..buffer.len() {
+        if buffer[i] == 0 {
+            break;
+        }
+        buffer_vec.push(buffer[i]);
+        if buffer_vec.len() >= 100 {
+            try_log!("{}", &String::from_utf8(buffer_vec.clone()).unwrap());
+            buffer_vec.clear();
+        }
+    }
+    try_log!("{}", &String::from_utf8(buffer_vec).unwrap());
 }

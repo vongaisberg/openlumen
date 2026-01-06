@@ -50,7 +50,7 @@ impl LogRingBuffer {
     }
 } 
 
-use core::fmt::{Debug, Write};
+pub use core::fmt::{Debug, Write};
 
 
 pub async fn log(message: &str) {
@@ -62,7 +62,7 @@ pub async fn log(message: &str) {
 /// Logs a value that implements the Debug trait.
 /// 
 /// Usage: `log_debug(&some_value).await;`
-pub async fn log_debug<T: Debug>(value: &T) {
+async fn log_debug<T: Debug>(value: &T) {
     let time = Instant::now();
     let mut s: String<100> = String::new();
     // Use core::fmt::Write to format Debug into the string
@@ -81,7 +81,7 @@ pub fn try_log(message: &str) {
 
 
 
-pub fn try_log_debug<T: Debug>(value: &T) {
+fn try_log_debug<T: Debug>(value: &T) {
     let time = Instant::now();
     if let Ok(mut guard) = LOG_RING.try_lock() {
         let mut s: String<100> = String::new();
@@ -90,6 +90,29 @@ pub fn try_log_debug<T: Debug>(value: &T) {
     }
 
 }
+
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        async {
+            use core::fmt::Write;
+            let mut s: heapless::String<100> = heapless::String::new();
+            let _ = core::write!(&mut s, $($arg)*);
+            $crate::log::log(s.as_str()).await
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! try_log {
+    ($($arg:tt)*) => {
+        
+            let mut s: heapless::String<100> = heapless::String::new();
+            let _ = core::write!(&mut s, $($arg)*);
+            $crate::log::try_log(s.as_str())
+    };
+}
+
 
 pub async fn get_logs() -> String<3000> {
     let buffer = LOG_RING.lock().await;

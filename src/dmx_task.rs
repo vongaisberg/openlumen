@@ -69,7 +69,7 @@ pub async fn send_dmx(
     mut dmx3_dir: Output<'static>,
     mut dmx4_dir: Output<'static>,
 ) {
-    log::log("[DMX] DMX task started").await;
+    log!("[DMX] DMX task started").await;
 
     // Statistics tracking
     let mut frame_count: u32 = 0;

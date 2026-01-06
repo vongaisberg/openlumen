@@ -79,7 +79,7 @@ pub static ARTNET_NODE_CONFIG: Mutex<ThreadModeRawMutex, ArtnetConfig> =
 /// ArtNet receiver task
 #[embassy_executor::task]
 pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
-    log::log("[ARTNET] ArtNet task starting").await;
+    log!("[ARTNET] ArtNet task starting").await;
     // Use smaller buffers matching embassy examples
     let mut rx_buffer = [0; 2048];
     let mut tx_buffer = [0; 1024];
@@ -95,8 +95,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
     );
 
     if let Err(e) = socket.bind(6454) {
-        log::log("[ARTNET] Failed to bind ArtNet socket").await;
-        log::log_debug(&e).await;
+        log!("[ARTNET] Failed to bind ArtNet socket, error: {:?}", e).await;
         loop {
             yield_now().await;
         }

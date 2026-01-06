@@ -19,7 +19,7 @@ const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
 /// Base offset for filesystem region
 /// Filesystem is placed at 2MB - 32KB to avoid the very last sector
 /// Must be aligned to ERASE_SIZE for proper flash operations
-const FILESYSTEM_BASE_OFFSET: usize = (2 * 1024 * 1024) - (16 * 1024); // 2MB - 16KB
+const FILESYSTEM_BASE_OFFSET: usize = (2 * 1024 * 1024) - (32 * 1024); // 2MB - 16KB
 
 // Compile-time check that FILESYSTEM_BASE_OFFSET is aligned to ERASE_SIZE
 const _: () = {
@@ -27,9 +27,7 @@ const _: () = {
 };
 
 /// Available filesystem size
-/// Filesystem occupies 16KB
-/// Last 16KB (2MB-16KB to 2MB) is reserved for direct settings storage
-const FILESYSTEM_SIZE: usize = 16 * 1024; // 16KB
+const FILESYSTEM_SIZE: usize = 32 * 1024; // 16KB
 
 /// Flash storage driver for LittleFS2
 /// Wraps embassy_rp flash with offset translation for filesystem region
