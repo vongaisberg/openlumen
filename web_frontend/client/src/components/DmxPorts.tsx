@@ -2,45 +2,93 @@ import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import DMXPortCard from "./DMXPortCard";
-
-interface DmxPortData {
-  portNumber: number;
-  mode: string;
-  universe: number;
-  mergeMode: string;
-  outputRate: string;
-  packetsPerSecond: number;
-}
+import { DmxPortConfig, DmxPortConfigUpdateItem, PortMode, MergeMode, OutputRate, DmxPortOutput } from "@shared/types";
 
 interface DmxPortsProps {
   data: any;
+  dmxOutputs: DmxPortOutput[];
   onSave: (data: any) => void;
 }
 
-export default function DmxPorts({ data, onSave }: DmxPortsProps) {
-  const [ports, setPorts] = useState<DmxPortData[]>([
-    { portNumber: 1, mode: "on", universe: 0, mergeMode: "htp", outputRate: "normal", packetsPerSecond: 0 },
-    { portNumber: 2, mode: "off", universe: 1, mergeMode: "htp", outputRate: "normal", packetsPerSecond: 0 },
-    { portNumber: 3, mode: "blackout", universe: 2, mergeMode: "ltp", outputRate: "normal", packetsPerSecond: 0 },
-    { portNumber: 4, mode: "on", universe: 3, mergeMode: "htp", outputRate: "fast", packetsPerSecond: 0 },
+export default function DmxPorts({ data, dmxOutputs, onSave }: DmxPortsProps) {
+  const [ports, setPorts] = useState<DmxPortConfig[]>([
+    //{
+    //  portNumber: 1,
+    //  mode: PortMode.Inactive,
+    //  universe: 0,
+    //  mergeMode: MergeMode.Htp,
+    //  outputRate: OutputRate.Hz44,
+    //  sourceDevices: []
+    //},
+    //{
+    //  portNumber: 2,
+    //  mode: PortMode.Inactive,
+    //  universe: 1,
+    //  mergeMode: MergeMode.Htp,
+    //  outputRate: OutputRate.Hz44,
+    //  sourceDevices: []
+    //},
+    //{
+    //  portNumber: 3,
+    //  mode: PortMode.Inactive,
+    //  universe: 2,
+    //  mergeMode: MergeMode.Ltp,
+    //  outputRate: OutputRate.Hz44,
+    //  sourceDevices: []
+    //},
+    //{
+    //  portNumber: 4,
+    //  mode: PortMode.Inactive,
+    //  universe: 3,
+    //  mergeMode: MergeMode.Htp,
+    //  outputRate: OutputRate.Hz44,
+    //  sourceDevices: []
+    //}
   ]);
 
   useEffect(() => {
-    if (data?.dmxPorts) {
+    if (data?.dmxPorts && Array.isArray(data.dmxPorts)) {
       setPorts(data.dmxPorts);
     }
   }, [data]);
 
   const handlePortChange = (portNumber: number, field: string, value: any) => {
-    setPorts(ports.map(port => 
-      port.portNumber === portNumber 
+    const updatedPorts = ports.map((port, index) => 
+      index === portNumber 
         ? { ...port, [field]: value } 
         : port
-    ));
+    );
+    setPorts(updatedPorts);
+    
+    // Automatically save changes - only send editable fields
+    const updateItems: DmxPortConfigUpdateItem[] = updatedPorts.map(port => ({
+      mode: port.mode,
+      universe: port.universe,
+      mergeMode: port.mergeMode,
+      outputRate: port.outputRate,
+      // sourceDevices is intentionally omitted - it's read-only
+    }));
+    
+    onSave({
+      type: "dmxPortConfigUpdate",
+      data: updateItems
+    });
   };
 
   const handleSave = () => {
-    onSave({ ports });
+    // Only send editable fields when saving
+    const updateItems: DmxPortConfigUpdateItem[] = ports.map(port => ({
+      mode: port.mode,
+      universe: port.universe,
+      mergeMode: port.mergeMode,
+      outputRate: port.outputRate,
+      // sourceDevices is intentionally omitted - it's read-only
+    }));
+    
+    onSave({
+      type: "dmxPortConfigUpdate",
+      data: updateItems
+    });
   };
 
   return (
@@ -50,11 +98,13 @@ export default function DmxPorts({ data, onSave }: DmxPortsProps) {
         
         <div className="space-y-6">
           {/* Port Cards */}
-          {ports.map(port => (
+          {ports.map((port, index) => (
             <DMXPortCard 
-              key={port.portNumber} 
+              key={index} 
+              portNumber={index}
               port={port} 
-              onChange={handlePortChange} 
+              dmxOutput={dmxOutputs.find(output => output.portNumber === index)}
+              onChange={(index, field, value) => handlePortChange(index, field, value)} 
             />
           ))}
           

@@ -23,35 +23,33 @@ export async function apiRequest(
   return res;
 }
 
-type UnauthorizedBehavior = "returnNull" | "throw";
-export const getQueryFn: <T>(options: {
-  on401: UnauthorizedBehavior;
-}) => QueryFunction<T> =
-  ({ on401: unauthorizedBehavior }) =>
-  async ({ queryKey }) => {
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5, // 5 minutes
+      retry: 1,
+    },
+  },
+});
+
+export const createQueryFn =
+  <T>({ on401: unauthorizedBehavior }: { on401: "redirect" | "throw" }) =>
+  async ({ queryKey }: { queryKey: readonly unknown[] }) => {
     const res = await fetch(queryKey[0] as string, {
       credentials: "include",
     });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    if (res.status === 401) {
+      if (unauthorizedBehavior === "redirect") {
+        window.location.href = "/login";
+        return;
+      }
+      throw new Error("Unauthorized");
     }
 
-    await throwIfResNotOk(res);
-    return await res.json();
-  };
+    if (!res.ok) {
+      throw new Error("Network response was not ok");
+    }
 
-export const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      queryFn: getQueryFn({ on401: "throw" }),
-      refetchInterval: false,
-      refetchOnWindowFocus: false,
-      staleTime: Infinity,
-      retry: false,
-    },
-    mutations: {
-      retry: false,
-    },
-  },
-});
+    return res.json() as Promise<T>;
+  };

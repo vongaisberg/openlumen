@@ -7,29 +7,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Button } from "@/components/ui/button";
-import { SourceDevice } from "@shared/schema";
+import { DmxPortConfig, PortMode, MergeMode, OutputRate, SourceDevice, DmxPortOutput } from "@shared/types";
 import { useEffect, useState } from "react";
-import DmxChannelViewer from "./DmxChannelViewer";
+import DmxChannelHeatmap from "./DmxChannelHeatmap";
 
 interface DMXPortProps {
-  port: {
-    portNumber: number;
-    mode: string;
-    universe: number;
-    mergeMode: string;
-    outputRate: string;
-    packetsPerSecond: number;
-    sourceDevices?: SourceDevice[];
-    channelValues?: number[];
-  };
+  portNumber: number;
+  port: DmxPortConfig;
+  dmxOutput?: DmxPortOutput;
   onChange: (portNumber: number, field: string, value: any) => void;
 }
 
-export default function DMXPortCard({ port, onChange }: DMXPortProps) {
+export default function DMXPortCard({ portNumber, port, dmxOutput, onChange }: DMXPortProps) {
   const [blinkOn, setBlinkOn] = useState(true);
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const hasActivity = port.packetsPerSecond > 0;
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const hasActivity = port.sourceDevices.some(device => device.packets_per_second && device.packets_per_second > 0);
 
   // Set up blinking animation
   useEffect(() => {
@@ -43,84 +35,51 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
   }, [hasActivity]);
 
   // Determine status indicator color based on mode
-  const getStatusColor = (mode: string) => {
-    if (mode === "off") return "bg-[#6B7280]"; // status-off
+  const getStatusColor = (mode: PortMode) => {
+    if (mode === PortMode.Inactive) return "bg-[#6B7280]"; // status-off
 
-    // For on or blackout modes with activity, handle blinking
+    // For active or blackout modes with activity, handle blinking
     if (hasActivity) {
       if (blinkOn) {
-        return mode === "on" ? "bg-[#10B981]" : "bg-[#F59E0B]"; // lit
+        return mode === PortMode.Active ? "bg-[#10B981]" : "bg-[#F59E0B]"; // lit
       } else {
         return (
-          "bg-opacity-30 " + (mode === "on" ? "bg-[#10B981]" : "bg-[#F59E0B]")
+          "bg-opacity-30 " + (mode === PortMode.Active ? "bg-[#10B981]" : "bg-[#F59E0B]")
         ); // dimmed
       }
     }
 
     // Default colors for non-blinking state
-    return mode === "on"
+    return mode === PortMode.Active
       ? "bg-[#10B981]"
-      : mode === "blackout"
+      : mode === PortMode.Blackout
         ? "bg-[#F59E0B]"
         : "bg-gray-400";
   };
 
   // Determine status text based on mode
-  const getStatusText = (mode: string) => {
+  const getStatusText = (mode: PortMode) => {
     switch (mode) {
-      case "on":
+      case PortMode.Active:
         return hasActivity ? "Active" : "On";
-      case "off":
+      case PortMode.Inactive:
         return "Off";
-      case "blackout":
+      case PortMode.Blackout:
         return hasActivity ? "Blackout (Active)" : "Blackout";
       default:
         return "Unknown";
     }
   };
-  
-  // Helper function to get a summary of active channels
-  const getActiveChannelsSummary = (channelValues: number[]) => {
-    // Count total active channels
-    const activeChannels = channelValues.filter(val => val > 0);
-    const totalActive = activeChannels.length;
-    
-    if (totalActive === 0) {
-      return "None (all channels at 0)";
-    }
-    
-    // Get top 5 active channels with their values
-    const topChannels: {channel: number, value: number}[] = [];
-    channelValues.forEach((val, index) => {
-      if (val > 0) {
-        topChannels.push({ channel: index + 1, value: val });
-      }
-    });
-    
-    // Sort by value (highest first) and take up to 5
-    topChannels.sort((a, b) => b.value - a.value);
-    const topFive = topChannels.slice(0, 5);
-    
-    return (
-      <>
-        {totalActive} channel{totalActive !== 1 ? 's' : ''} active. 
-        Top values: {' '}
-        {topFive.map((ch, idx) => (
-          <span key={ch.channel} className="whitespace-nowrap">
-            Ch {ch.channel} ({ch.value})
-            {idx < topFive.length - 1 ? ', ' : ''}
-          </span>
-        ))}
-        {totalActive > 5 ? ` and ${totalActive - 5} more...` : ''}
-      </>
-    );
+
+  const handlePortChange = (portNumber: number, field: string, value: any) => {
+    onChange(portNumber, field, value);
   };
 
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
         <h3 className="text-base font-medium text-gray-800 mb-2 sm:mb-0">
-          Port {port.portNumber}
+          Port {portNumber + 1}
         </h3>
 
         <div className="flex items-center">
@@ -136,7 +95,7 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
           <div className="flex items-center">
             <span className="text-sm text-gray-500 mr-2">Total Packets/s:</span>
             <span className="text-sm font-medium text-gray-800">
-              {port.packetsPerSecond}
+              {port.sourceDevices.reduce((sum, device) => sum + (device.packets_per_second || 0), 0)}
             </span>
           </div>
         </div>
@@ -146,22 +105,22 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         {/* Port Mode */}
         <div>
           <Label
-            htmlFor={`port${port.portNumber}_mode`}
+            htmlFor={`port${portNumber}_mode`}
             className="block text-sm font-medium text-gray-700"
           >
             Mode
           </Label>
           <Select
             defaultValue={port.mode}
-            onValueChange={(value) => onChange(port.portNumber, "mode", value)}
+            onValueChange={(value) => handlePortChange(portNumber, "mode", value)}
           >
-            <SelectTrigger id={`port${port.portNumber}_mode`}>
+            <SelectTrigger id={`port${portNumber}_mode`}>
               <SelectValue placeholder="Select mode" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="on">On</SelectItem>
-              <SelectItem value="off">Off</SelectItem>
-              <SelectItem value="blackout">Blackout</SelectItem>
+              <SelectItem value={PortMode.Active}>On</SelectItem>
+              <SelectItem value={PortMode.Inactive}>Off</SelectItem>
+              <SelectItem value={PortMode.Blackout}>Blackout</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -169,19 +128,19 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         {/* Universe */}
         <div>
           <Label
-            htmlFor={`port${port.portNumber}_universe`}
+            htmlFor={`port${portNumber}_universe`}
             className="block text-sm font-medium text-gray-700"
           >
             Universe
           </Label>
           <Select
-            defaultValue={port.universe.toString()}
+            value={`${port.universe}`}
             onValueChange={(value) =>
-              onChange(port.portNumber, "universe", parseInt(value))
+              handlePortChange(portNumber, "universe", parseInt(value))
             }
           >
-            <SelectTrigger id={`port${port.portNumber}_universe`}>
-              <SelectValue placeholder="Select universe" />
+            <SelectTrigger id={`port${portNumber}_universe`}>
+              <SelectValue>{`${port.universe}`}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {Array.from({ length: 16 }, (_, i) => (
@@ -196,7 +155,7 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         {/* Merge Mode */}
         <div>
           <Label
-            htmlFor={`port${port.portNumber}_merge`}
+            htmlFor={`port${portNumber}_merge`}
             className="block text-sm font-medium text-gray-700"
           >
             Merge Mode
@@ -204,18 +163,18 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
           <Select
             defaultValue={port.mergeMode}
             onValueChange={(value) =>
-              onChange(port.portNumber, "mergeMode", value)
+              handlePortChange(portNumber, "mergeMode", value)
             }
           >
-            <SelectTrigger id={`port${port.portNumber}_merge`}>
+            <SelectTrigger id={`port${portNumber}_merge`}>
               <SelectValue placeholder="Select merge mode" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="htp">
+              <SelectItem value={MergeMode.Htp}>
                 HTP (Highest Takes Precedence)
               </SelectItem>
-              <SelectItem value="ltp">LTP (Latest Takes Precedence)</SelectItem>
-              <SelectItem value="dmx512">DMX512 (Last Sender Wins)</SelectItem>
+              <SelectItem value={MergeMode.Ltp}>LTP (Latest Takes Precedence)</SelectItem>
+              <SelectItem value={MergeMode.Priority}>Priority (Last Sender Wins)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -223,7 +182,7 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         {/* Output Speed */}
         <div>
           <Label
-            htmlFor={`port${port.portNumber}_speed`}
+            htmlFor={`port${portNumber}_speed`}
             className="block text-sm font-medium text-gray-700"
           >
             Output Rate
@@ -231,17 +190,16 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
           <Select
             defaultValue={port.outputRate}
             onValueChange={(value) =>
-              onChange(port.portNumber, "outputRate", value)
+              handlePortChange(portNumber, "outputRate", value)
             }
           >
-            <SelectTrigger id={`port${port.portNumber}_speed`}>
+            <SelectTrigger id={`port${portNumber}_speed`}>
               <SelectValue placeholder="Select output rate" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="slow">Slow (20 fps)</SelectItem>
-              <SelectItem value="normal">Normal (30 fps)</SelectItem>
-              <SelectItem value="fast">Fast (40 fps)</SelectItem>
-              <SelectItem value="max">Maximum (44 fps)</SelectItem>
+              <SelectItem value={OutputRate.Hz20}>Slow (20 fps)</SelectItem>
+              <SelectItem value={OutputRate.Hz30}>Normal (30 fps)</SelectItem>
+              <SelectItem value={OutputRate.Hz44}>Fast (44 fps)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -262,12 +220,12 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
                       {device.name}
                     </span>
                     <div className="flex items-center gap-3">
-                      {device.packetsPerSecond !== undefined && (
+                      {device.packets_per_second !== undefined && (
                         <span className="text-xs px-2 py-1 bg-gray-100 rounded-full text-gray-700">
-                          {device.packetsPerSecond} pkt/s
+                          {device.packets_per_second} pkt/s
                         </span>
                       )}
-                      <span className="text-sm text-gray-500">{device.ip}</span>
+                      <span className="text-sm text-gray-500">{device.ip.join('.')}</span>
                     </div>
                   </div>
                 </div>
@@ -285,38 +243,27 @@ export default function DMXPortCard({ port, onChange }: DMXPortProps) {
         )}
       </div>
       
-      {/* DMX Channel Viewer */}
-      {port.channelValues && port.channelValues.length > 0 && (
-        <div className="mt-4 pt-4 border-t border-gray-200">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium text-gray-700">
-              DMX Channel Viewer
-            </h4>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => setViewerOpen(true)}
-              className="text-sm"
-            >
-              View All Channels
-            </Button>
-          </div>
-          
-          {/* Full-screen Channel Viewer */}
-          <DmxChannelViewer 
-            open={viewerOpen}
-            onOpenChange={setViewerOpen}
-            channelValues={port.channelValues as unknown as number[]}
-            portNumber={port.portNumber}
+      {/* DMX Channel Heatmap Toggle */}
+      <div className="mt-4 pt-4 border-t border-gray-200">
+        <div className="flex items-center justify-between">
+          <Label
+            htmlFor={`port${portNumber}_heatmap`}
+            className="text-sm font-medium text-gray-700"
+          >
+            Show Channel Heatmap
+          </Label>
+          <Switch
+            id={`port${portNumber}_heatmap`}
+            checked={showHeatmap}
+            onCheckedChange={setShowHeatmap}
           />
-          
-          {/* Channel Summary (show a few active channels) */}
-          <div className="mt-3 text-xs text-gray-600">
-            <span className="font-medium">Active channels: </span>
-            {getActiveChannelsSummary(port.channelValues as unknown as number[])}
-          </div>
         </div>
-      )}
+        {showHeatmap && (
+          <div className="mt-4">
+            <DmxChannelHeatmap portNumber={portNumber} dmxOutput={dmxOutput} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

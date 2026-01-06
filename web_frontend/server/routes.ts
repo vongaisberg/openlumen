@@ -1,7 +1,14 @@
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
+import type { 
+  NetworkConfig,
+  ArtnetConfig,
+  DmxPortConfig,
+  SystemInfo,
+  DmxPortOutput
+} from "@shared/types";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup HTTP server
@@ -13,8 +20,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Track all connected clients
   const clients = new Set<WebSocket>();
   
-  // Interval to simulate live data updates
-  let updateInterval: NodeJS.Timeout;
+  // Intervals for different update types
+  let stateUpdateInterval: NodeJS.Timeout;
+  let dmxUpdateInterval: NodeJS.Timeout;
   
   // WebSocket connection handler
   wss.on('connection', (ws) => {
@@ -32,16 +40,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }));
     
-    // If this is the first client, start the update interval
+    // If this is the first client, start the update intervals
     if (clients.size === 1) {
-      updateInterval = setInterval(() => {
+      // State updates every 2 seconds
+      stateUpdateInterval = setInterval(() => {
         // Update some live values
         storage.updateLiveData();
         
         // Send updates to all connected clients
-        const liveUpdate = {
+        const stateUpdate = {
           type: 'stateUpdate',
           data: {
+            networkConfig: storage.getNetworkConfig(),
+            artnetConfig: storage.getArtnetConfig(),
             dmxPorts: storage.getDmxPorts(),
             systemInfo: storage.getSystemInfo()
           }
@@ -49,161 +60,111 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         clients.forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(liveUpdate));
+            client.send(JSON.stringify(stateUpdate));
           }
         });
-      }, 5000); // Update every 5 seconds
+      }, 2000);
+
+      // DMX updates every 100ms (10 fps)
+      dmxUpdateInterval = setInterval(() => {
+        // Generate mock DMX data
+        const dmxOutputs: DmxPortOutput[] = storage.getDmxPorts().map(port => {
+          // Only generate data for active ports
+          if (port.mode === 'Active') {
+            return {
+              portNumber: port.portNumber,
+              dmxData: Array.from({ length: 512 }, () => Math.floor(Math.random() * 256))
+            };
+          }
+          return {
+            portNumber: port.portNumber,
+            dmxData: new Array(512).fill(0)
+          };
+        });
+
+        // Send DMX updates to all connected clients
+        const dmxUpdate = {
+          type: 'dmxOutputUpdate',
+          data: dmxOutputs
+        };
+
+        clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(dmxUpdate));
+          }
+        });
+      }, 500);
     }
     
-    // Message handler
-    ws.on('message', async (message) => {
-      try {
-        const parsedMessage = JSON.parse(message.toString());
-        console.log('Received message:', parsedMessage);
-        
-        // Handle different actions
-        switch (parsedMessage.action) {
-          case 'updateNetworkSettings':
-            storage.updateNetworkConfig(parsedMessage.payload);
-            break;
-            
-          case 'updateArtnetSettings':
-            storage.updateArtnetConfig(parsedMessage.payload);
-            break;
-            
-          case 'updateDmxSettings':
-            storage.updateDmxPorts(parsedMessage.payload.ports);
-            break;
-            
-          case 'updateSystemSettings':
-            handleSystemAction(parsedMessage.payload.action, ws);
-            break;
-            
-          case 'updatePortStatus':
-            storage.updatePortStatus(
-              parsedMessage.payload.port,
-              parsedMessage.payload.status
-            );
-            break;
-            
-          default:
-            console.log('Unknown action:', parsedMessage.action);
-        }
-        
-        // Broadcast updated state to all clients
-        broadcastStateToAll();
-      } catch (error) {
-        console.error('Error handling message:', error);
-      }
-    });
-    
-    // Connection close handler
+    // Handle client disconnection
     ws.on('close', () => {
       console.log('Client disconnected');
       clients.delete(ws);
       
-      // If no clients left, clear the update interval
-      if (clients.size === 0 && updateInterval) {
-        clearInterval(updateInterval);
+      // If no clients left, stop the update intervals
+      if (clients.size === 0) {
+        clearInterval(stateUpdateInterval);
+        clearInterval(dmxUpdateInterval);
       }
     });
   });
   
-  // Function to handle system actions
-  function handleSystemAction(action: string, ws: WebSocket) {
-    switch (action) {
-      case 'restartDevice':
-        // Simulate restart
-        broadcastToAll({
-          type: 'statusUpdate',
-          status: 'Restarting...'
-        });
-        
-        // After delay, simulate reconnection
-        setTimeout(() => {
-          broadcastToAll({
-            type: 'statusUpdate',
-            status: 'Running'
-          });
-          broadcastStateToAll();
-        }, 5000);
-        break;
-        
-      case 'resetToDefaults':
-        storage.resetToDefaults();
-        break;
-        
-      case 'factoryReset':
-        storage.factoryReset();
-        
-        // Simulate disconnection
-        broadcastToAll({
-          type: 'statusUpdate',
-          status: 'Factory Resetting...'
-        });
-        
-        // After delay, simulate reconnection
-        setTimeout(() => {
-          broadcastToAll({
-            type: 'statusUpdate',
-            status: 'Running'
-          });
-          broadcastStateToAll();
-        }, 8000);
-        break;
-        
-      case 'checkUpdates':
-        // In real implementation, this would check for firmware updates
-        ws.send(JSON.stringify({
-          type: 'firmwareUpdate',
-          status: 'upToDate'
-        }));
-        break;
-        
-      case 'updateFirmware':
-        // Simulate firmware update
-        broadcastToAll({
-          type: 'statusUpdate',
-          status: 'Updating Firmware...'
-        });
-        
-        // After delay, simulate completion
-        setTimeout(() => {
-          storage.updateFirmware();
-          broadcastToAll({
-            type: 'statusUpdate',
-            status: 'Running'
-          });
-          broadcastStateToAll();
-        }, 10000);
-        break;
-    }
-  }
+  // API Routes
+  app.get('/api/network', (_req: Request, res: Response) => {
+    res.json(storage.getNetworkConfig());
+  });
   
-  // Function to broadcast state to all clients
-  function broadcastStateToAll() {
-    const state = {
-      type: 'stateUpdate',
-      data: {
-        networkConfig: storage.getNetworkConfig(),
-        artnetConfig: storage.getArtnetConfig(),
-        dmxPorts: storage.getDmxPorts(),
-        systemInfo: storage.getSystemInfo()
-      }
-    };
-    
-    broadcastToAll(state);
-  }
+  app.post('/api/network', (req: Request, res: Response) => {
+    const config = req.body as NetworkConfig;
+    storage.updateNetworkConfig(config);
+    res.json({ success: true });
+  });
   
-  // Function to broadcast any message to all clients
-  function broadcastToAll(message: any) {
-    const messageString = JSON.stringify(message);
-    clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(messageString);
-      }
-    });
-  }
+  app.get('/api/artnet', (_req: Request, res: Response) => {
+    res.json(storage.getArtnetConfig());
+  });
+  
+  app.post('/api/artnet', (req: Request, res: Response) => {
+    const config = req.body as ArtnetConfig;
+    storage.updateArtnetConfig(config);
+    res.json({ success: true });
+  });
+  
+  app.get('/api/dmx-ports', (_req: Request, res: Response) => {
+    res.json(storage.getDmxPorts());
+  });
+  
+  app.post('/api/dmx-ports', (req: Request, res: Response) => {
+    const ports = req.body as DmxPortConfig[];
+    storage.updateDmxPorts(ports);
+    res.json({ success: true });
+  });
+  
+  app.post('/api/dmx-ports/:portNumber/status', (req: Request, res: Response) => {
+    const portNumber = parseInt(req.params.portNumber);
+    const { status } = req.body;
+    storage.updatePortStatus(portNumber, status);
+    res.json({ success: true });
+  });
+  
+  app.get('/api/system', (_req: Request, res: Response) => {
+    res.json(storage.getSystemInfo());
+  });
+  
+  app.post('/api/system/reset', (_req: Request, res: Response) => {
+    storage.resetToDefaults();
+    res.json({ success: true });
+  });
+  
+  app.post('/api/system/factory-reset', (_req: Request, res: Response) => {
+    storage.factoryReset();
+    res.json({ success: true });
+  });
+  
+  app.post('/api/system/update-firmware', (_req: Request, res: Response) => {
+    storage.updateFirmware();
+    res.json({ success: true });
+  });
 
   return httpServer;
 }

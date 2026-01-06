@@ -8,16 +8,34 @@ interface SystemInfoProps {
   onSave: (data: any) => void;
 }
 
+// Helper function to format version number
+const formatVersion = (version: number[]): string => {
+  return `v${version.join('.')}`;
+};
+
+// Helper function to format uptime
+const formatUptime = (seconds: number): string => {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+
+  const parts = [];
+  if (days > 0) parts.push(`${days} day${days === 1 ? '' : 's'}`);
+  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
+  if (minutes > 0) parts.push(`${minutes} minute${minutes === 1 ? '' : 's'}`);
+  if (remainingSeconds > 0 || parts.length === 0) {
+    parts.push(`${remainingSeconds} second${remainingSeconds === 1 ? '' : 's'}`);
+  }
+
+  return parts.join(', ');
+};
+
 export default function SystemInfo({ data, onSave }: SystemInfoProps) {
   const [systemData, setSystemData] = useState({
-    firmwareVersion: "v2.4.0",
-    hardwareVersion: "v1.2",
-    uptime: "3 days, 7 hours",
-    temperature: "42°C",
-    memoryUsage: 38,
-    cpuLoad: 22,
-    currentFirmwareVersion: "v2.4.0",
-    latestFirmwareVersion: "v2.4.0",
+    firmwareVersion: [1, 0, 0],
+    hardwareVersion: [1, 0, 0],
+    uptime: 0,
   });
   
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
@@ -26,18 +44,19 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
     message: "",
     action: "",
   });
+  const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
-    if (data?.systemInfo) {
+    if (data?.systemInfo && !isDirty) {
       setSystemData({
         ...systemData,
         ...data.systemInfo,
       });
     }
-  }, [data]);
+  }, [data, isDirty]);
 
   const handleCheckUpdates = () => {
-    // In a real app, this would check for updates
+    setIsDirty(true);
     onSave({ action: "checkUpdates" });
   };
 
@@ -47,6 +66,7 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
   };
 
   const handleConfirm = () => {
+    setIsDirty(true);
     onSave({ action: dialogConfig.action });
     setConfirmDialogOpen(false);
   };
@@ -62,63 +82,19 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <h3 className="text-sm font-medium text-gray-700">Firmware Version</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.firmwareVersion}</p>
+                <p className="mt-1 text-sm text-gray-900">{formatVersion(systemData.firmwareVersion)}</p>
               </div>
               <div>
                 <h3 className="text-sm font-medium text-gray-700">Hardware Version</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.hardwareVersion}</p>
+                <p className="mt-1 text-sm text-gray-900">{formatVersion(systemData.hardwareVersion)}</p>
               </div>
               <div>
                 <h3 className="text-sm font-medium text-gray-700">Uptime</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.uptime}</p>
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-gray-700">Temperature</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.temperature}</p>
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-gray-700">Memory Usage</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.memoryUsage}%</p>
-              </div>
-              <div>
-                <h3 className="text-sm font-medium text-gray-700">CPU Load</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.cpuLoad}%</p>
+                <p className="mt-1 text-sm text-gray-900">{formatUptime(systemData.uptime)}</p>
               </div>
             </div>
             
-            {/* Firmware Update */}
-            <div className="pt-6 border-t border-gray-200">
-              <h3 className="text-base font-medium text-gray-800 mb-4">Firmware Update</h3>
-              
-              <div className="flex items-center space-x-4">
-                <span className="text-sm text-gray-500">Current version:</span>
-                <span className="text-sm font-medium text-gray-900">{systemData.currentFirmwareVersion}</span>
-                
-                <span className="text-sm text-gray-500 ml-6">Latest available:</span>
-                <span className="text-sm font-medium text-gray-900">{systemData.latestFirmwareVersion}</span>
-              </div>
-              
-              <div className="mt-4 flex items-center">
-                <Button 
-                  variant="outline" 
-                  onClick={handleCheckUpdates}
-                >
-                  Check for Updates
-                </Button>
-                
-                <Button 
-                  disabled={systemData.currentFirmwareVersion === systemData.latestFirmwareVersion} 
-                  className="ml-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300"
-                  onClick={() => showConfirmDialog(
-                    "Update Firmware",
-                    "Are you sure you want to update the firmware? The device will restart during this process.",
-                    "updateFirmware"
-                  )}
-                >
-                  Update Firmware
-                </Button>
-              </div>
-            </div>
+            
             
             {/* System Actions */}
             <div className="pt-6 border-t border-gray-200">

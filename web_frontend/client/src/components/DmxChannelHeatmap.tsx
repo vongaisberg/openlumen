@@ -2,30 +2,28 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
+import { DmxPortOutput } from "@shared/types";
 
 interface DmxChannelHeatmapProps {
-  channelValues: number[];
   portNumber: number;
+  dmxOutput?: DmxPortOutput;
 }
 
-export default function DmxChannelHeatmap({ channelValues, portNumber }: DmxChannelHeatmapProps) {
+export default function DmxChannelHeatmap({ portNumber, dmxOutput }: DmxChannelHeatmapProps) {
   const [selectedChannel, setSelectedChannel] = useState<number | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(1); // 1 = show all channels, higher values = zoom in
-  const [startChannel, setStartChannel] = useState(0); // First visible channel when zoomed
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
   const channelsPerRow = 32;
-  const cellSize = 16 * zoomLevel;
+  const cellSize = 16 * 2;
   const cellSpacing = 1;
-  const rowCount = Math.ceil(512 / channelsPerRow);
+  const rowCount = 16;
   
   // Calculate visible window based on zoom
-  const visibleChannelsCount = Math.floor(512 / zoomLevel);
-  const endChannel = Math.min(startChannel + visibleChannelsCount, 512);
+  
   
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !channelValues || channelValues.length === 0) return;
+    if (!canvas || !dmxOutput?.dmxData || dmxOutput.dmxData.length === 0) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -41,9 +39,9 @@ export default function DmxChannelHeatmap({ channelValues, portNumber }: DmxChan
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
     // Draw channels
-    for (let i = startChannel; i < endChannel; i++) {
-      const value = channelValues[i] || 0;
-      const relativeIndex = i - startChannel;
+    for (let i = 0; i < 512; i++) {
+      const value = dmxOutput.dmxData[i] || 0;
+      const relativeIndex = i - 0;
       const row = Math.floor(relativeIndex / channelsPerRow);
       const col = relativeIndex % channelsPerRow;
       
@@ -63,13 +61,15 @@ export default function DmxChannelHeatmap({ channelValues, portNumber }: DmxChan
       } else {
         fillColor = `rgba(239, 68, 68, ${intensity})`; // red for high values
       }
+      //dark gray
+      fillColor = `rgba(31, 41, 55, 0.5)`; // dark gray for high values
       
       // Draw cell background
       ctx.fillStyle = fillColor;
-      ctx.fillRect(x, y, cellSize, cellSize);
+      ctx.fillRect(x, y+cellSize*(1-intensity), cellSize, cellSize*intensity);
       
       // Add border for selected channel
-      if (i === selectedChannel) {
+      if (i+1 === selectedChannel) {
         ctx.strokeStyle = '#000';
         ctx.lineWidth = 2;
         ctx.strokeRect(x, y, cellSize, cellSize);
@@ -84,7 +84,7 @@ export default function DmxChannelHeatmap({ channelValues, portNumber }: DmxChan
         ctx.fillText((i + 1).toString(), x + cellSize / 2, y + cellSize / 2);
       }
     }
-  }, [channelValues, selectedChannel, zoomLevel, startChannel, endChannel]);
+  }, [dmxOutput, selectedChannel]);
   
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -97,89 +97,33 @@ export default function DmxChannelHeatmap({ channelValues, portNumber }: DmxChan
     const col = Math.floor(x / (cellSize + cellSpacing));
     const row = Math.floor(y / (cellSize + cellSpacing));
     
-    const clickedChannel = startChannel + row * channelsPerRow + col;
-    
+    const clickedChannel = 1+ row * channelsPerRow + col;
     if (clickedChannel >= 0 && clickedChannel < 512) {
       setSelectedChannel(selectedChannel === clickedChannel ? null : clickedChannel);
     }
   };
   
-  const handleZoomChange = (newValue: number[]) => {
-    setZoomLevel(newValue[0]);
-    
-    // Adjust starting channel to keep the view centered around the current position
-    if (selectedChannel !== null) {
-      // Calculate a new start that keeps the selected channel visible
-      const newVisibleChannelsCount = Math.floor(512 / newValue[0]);
-      const idealStart = Math.max(0, selectedChannel - Math.floor(newVisibleChannelsCount / 2));
-      setStartChannel(Math.min(idealStart, 512 - newVisibleChannelsCount));
-    } else {
-      // Without a selection, just make sure our current view stays valid
-      const newVisibleChannelsCount = Math.floor(512 / newValue[0]);
-      const maxStart = 512 - newVisibleChannelsCount;
-      setStartChannel(Math.min(startChannel, maxStart));
-    }
-  };
-  
-  const navigateChannels = (direction: 'prev' | 'next') => {
-    const visibleChannelsCount = Math.floor(512 / zoomLevel);
-    
-    if (direction === 'prev') {
-      const newStart = Math.max(0, startChannel - Math.floor(visibleChannelsCount / 2));
-      setStartChannel(newStart);
-    } else {
-      const newStart = Math.min(512 - visibleChannelsCount, startChannel + Math.floor(visibleChannelsCount / 2));
-      setStartChannel(newStart);
-    }
-  };
+
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4 mt-4">
+    <div className="bg-white p-4">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4">
-        <h3 className="text-base font-medium text-gray-800 mb-2 sm:mb-0">
-          DMX Channel Heatmap - Port {portNumber}
-        </h3>
-        {selectedChannel !== null && (
-          <div className="text-sm">
-            <span className="font-medium">Channel {selectedChannel + 1}:</span> 
-            <span className="ml-2">{channelValues[selectedChannel] || 0} / 255</span>
-          </div>
-        )}
+        <div className="flex items-center gap-4">
+          <h3 className="text-base font-medium text-gray-800 mb-2 sm:mb-0">
+            DMX Channel Heatmap - Port {portNumber}
+          </h3>
+          {selectedChannel !== null && dmxOutput?.dmxData && (
+            <div className="text-sm">
+              <span className="font-medium">Channel {selectedChannel}:</span> 
+              <span className="ml-2">{dmxOutput.dmxData[selectedChannel - 1] || 0} / 255</span>
+            </div>
+          )}
+        </div>
       </div>
       
       <div className="flex flex-col space-y-3 mb-4">
-        <div className="flex items-center justify-between">
-          <Label htmlFor="zoom" className="text-sm">Zoom Level</Label>
-          <div className="flex items-center gap-2">
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => navigateChannels('prev')}
-              disabled={startChannel <= 0}
-            >
-              ← Prev
-            </Button>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => navigateChannels('next')}
-              disabled={startChannel + visibleChannelsCount >= 512}
-            >
-              Next →
-            </Button>
-          </div>
-        </div>
-        <Slider 
-          id="zoom"
-          min={1} 
-          max={8} 
-          step={0.5} 
-          value={[zoomLevel]} 
-          onValueChange={handleZoomChange} 
-        />
         <div className="text-xs text-gray-500">
-          Showing channels {startChannel + 1} - {Math.min(startChannel + visibleChannelsCount, 512)} 
-          of 512. Click on a channel to see its value.
+          Click on a channel to see its value.
         </div>
       </div>
       
