@@ -1,4 +1,4 @@
-//! Build script for RP2350 ArtNet Node
+//! Build script for RP2350 OpenLumen Node
 
 use std::env;
 use std::fs::File;

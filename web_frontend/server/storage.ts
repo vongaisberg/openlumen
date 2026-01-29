@@ -53,7 +53,7 @@ class MockStorage implements IStorage {
   private artnetConfig: ArtnetConfig = {
     net: 0,
     subnet: 0,
-    deviceName: "ArtNet Node"
+    deviceName: "OpenLumen Node"
   };
 
   private dmxPorts: DmxPortConfig[] = [
@@ -161,7 +161,7 @@ class MockStorage implements IStorage {
     this.artnetConfig = {
       net: 0,
       subnet: 0,
-      deviceName: "ArtNet Node"
+      deviceName: "OpenLumen Node"
     };
     
     this.dmxPorts = [

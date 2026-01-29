@@ -3,6 +3,6 @@ import App from "./App";
 import "./index.css";
 
 // Set document title
-document.title = "ArtNet Node Controller";
+document.title = "OpenLumen Node";
 
 createRoot(document.getElementById("root")!).render(<App />);

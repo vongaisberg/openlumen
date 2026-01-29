@@ -1,1 +1,3 @@
 /target
+*.uf2
+.env

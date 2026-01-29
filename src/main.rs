@@ -134,7 +134,7 @@ type SpiDevice = ExclusiveDevice<
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    log!("[MAIN] ArtNet Node starting on RP2350...").await;
+    log!("[MAIN] OpenLumen Node starting on RP2350...").await;
 
     // Initialize RP2350 peripherals
     let p = embassy_rp::init(Default::default());
@@ -263,7 +263,7 @@ async fn main(spawner: Spawner) {
         crate::schema::IpConfigType::Dhcp => {
             
             let mut dhcp_config = embassy_net::DhcpConfig::default();
-            dhcp_config.hostname = Some(String::try_from("DMX512 ArtNet Node").unwrap_or_default());
+            dhcp_config.hostname = Some(String::try_from("OpenLumen Node").unwrap_or_default());
             embassy_net::Config::dhcpv4(dhcp_config)
         }
     };
@@ -392,7 +392,7 @@ async fn main(spawner: Spawner) {
     }
     
     yield_now().await;
-    log!("[MAIN] ArtNet node running!").await;
+    log!("[MAIN] OpenLumen Node running!").await;
 
 
 

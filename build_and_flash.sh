@@ -1,16 +1,16 @@
 #!/bin/bash
-# Build script for ArtNet Node
+# Build script for OpenLumen Node
 # Builds the project, converts to UF2, and optionally flashes
 
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="thumbv8m.main-none-eabihf"
-BINARY_NAME="artnet_node"
+BINARY_NAME="openlumen"
 BUILD_DIR="$PROJECT_DIR/target/$TARGET/release"
 UF2_FILE="$PROJECT_DIR/target/${BINARY_NAME}.uf2"
 
-echo "Building ArtNet Node..."
+echo "Building OpenLumen Node..."
 cargo build --release
 
 echo "Converting to UF2..."

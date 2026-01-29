@@ -69,7 +69,7 @@ export default function useWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     
-    const ws = new WebSocket(wsUrl, ["artnet-node"]);
+    const ws = new WebSocket(wsUrl, ["openlumen"]);
     socket.current = ws;
 
     ws.onopen = () => {

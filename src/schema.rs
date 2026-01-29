@@ -101,7 +101,7 @@ impl Default for ArtnetConfig {
             id: None,
             net: 0,
             subnet: 0,
-            device_name: String::try_from("DMX512 ArtNet Node").unwrap_or_default(),
+            device_name: String::try_from("OpenLumen Node").unwrap_or_default(),
         }
     }
 }

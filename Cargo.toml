@@ -1,18 +1,18 @@
 [package]
-name = "artnet_node"
+name = "openlumen"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Embassy RP2350 support - using local embassy checkout
-embassy-rp = { path = "/home/max/git/embassy/embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
-embassy-executor = { path = "/home/max/git/embassy/embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
-embassy-time = { path = "/home/max/git/embassy/embassy-time", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-net = { path = "/home/max/git/embassy/embassy-net", features = ["defmt", "udp", "dhcpv4", "medium-ethernet", "tcp", "icmp", "dhcpv4-hostname"] }
-embassy-net-wiznet = { path = "/home/max/git/embassy/embassy-net-wiznet", features = ["defmt"] }
-embassy-sync = { path = "/home/max/git/embassy/embassy-sync", features = ["defmt"] }
-embassy-futures = { path = "/home/max/git/embassy/embassy-futures" }
-embassy-embedded-hal = { path = "/home/max/git/embassy/embassy-embedded-hal", features = ["defmt"] }
+# Embassy RP2350 support (pinned rev for reproducible builds)
+embassy-rp = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-rp", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-time", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-net", features = ["defmt", "udp", "dhcpv4", "medium-ethernet", "tcp", "icmp", "dhcpv4-hostname"] }
+embassy-net-wiznet = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-net-wiznet", features = ["defmt"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-sync", features = ["defmt"] }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-futures" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec", package = "embassy-embedded-hal", features = ["defmt"] }
 
 # PIO support
 pio = "0.2"
@@ -60,9 +60,9 @@ lto = true
 debug = true
 opt-level = 1
 
-# Patch picoserve's embassy dependencies to use our local versions
+# Patch picoserve's embassy dependencies to use the same git rev
 [patch.crates-io]
-embassy-time = { path = "/home/max/git/embassy/embassy-time" }
-embassy-time-driver = { path = "/home/max/git/embassy/embassy-time-driver" }
-embassy-net = { path = "/home/max/git/embassy/embassy-net" }
-embassy-executor = { path = "/home/max/git/embassy/embassy-executor" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "476c43e2a5f3c2c6b962f1f5455a029fda2eccec" }

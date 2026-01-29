@@ -106,7 +106,7 @@ impl AppBuilder for Webinterface {
                     info!("WebSocket upgrade request received");
                     upgrade
                         .on_upgrade(WebsocketServer)
-                        .with_protocol("artnet-node")
+                        .with_protocol("openlumen")
                 }),
             )
             .route("/logs",

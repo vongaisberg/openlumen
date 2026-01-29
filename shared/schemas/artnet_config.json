@@ -24,7 +24,7 @@
     },
     "deviceName": {
       "type": "string",
-      "default": "ArtNet Node",
+      "default": "OpenLumen Node",
       "description": "Name of the ArtNet device"
     },
     "protocolVersion": {

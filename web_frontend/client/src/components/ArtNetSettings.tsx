@@ -22,7 +22,7 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
   const [formData, setFormData] = useState<ArtnetFormValues>({
       net: "0",
       subnet: "0",
-      deviceName: "ArtNet Node",
+      deviceName: "OpenLumen Node",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isDirty, setIsDirty] = useState(false);
@@ -33,7 +33,7 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
       setFormData({
         net: String(data.artnetConfig.net ?? 0),
         subnet: String(data.artnetConfig.subnet ?? 0),
-        deviceName: data.artnetConfig.deviceName || "ArtNet Node",
+        deviceName: data.artnetConfig.deviceName || "OpenLumen Node",
       });
     }
   }, []); // Only run on mount
@@ -150,7 +150,7 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
               name="deviceName"
               value={formData.deviceName}
               onChange={handleChange}
-                      placeholder="ArtNet Node"
+                      placeholder="OpenLumen Node"
                       maxLength={17}
               className={errors.deviceName ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}
                     />

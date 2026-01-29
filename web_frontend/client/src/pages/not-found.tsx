@@ -19,7 +19,7 @@ export default function NotFound() {
           
           <div className="mt-6">
             <Link href="/">
-              <Button className="w-full">Go to ArtNet Controller</Button>
+              <Button className="w-full">Go to OpenLumen Node</Button>
             </Link>
           </div>
         </CardContent>

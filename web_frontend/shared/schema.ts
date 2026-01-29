@@ -24,7 +24,7 @@ export const artnetConfig = pgTable("artnet_config", {
   id: serial("id").primaryKey(),
   net: integer("net").notNull().default(0), // 0-127
   subnet: integer("subnet").notNull().default(0), // 0-15
-  deviceName: text("device_name").notNull().default("ArtNet Node"),
+  deviceName: text("device_name").notNull().default("OpenLumen Node"),
   protocolVersion: text("protocol_version").notNull().default("ArtNet 3"), // 'ArtNet 3' or 'ArtNet 4'
 });
 
