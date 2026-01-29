@@ -179,3 +179,61 @@ impl<'d, PIO: Instance> DmxOutputs<'d, PIO> {
         .await;
     }
 }
+
+/// Create all 4 DMX outputs individually for separate tasks
+///
+/// Returns a tuple of 4 DmxPio instances, one for each state machine.
+/// This allows each port to be managed by an independent task.
+pub fn create_dmx_outputs<'d, PIO: Instance>(
+    common: &mut Common<'d, PIO>,
+    sm0: StateMachine<'d, PIO, 0>,
+    sm1: StateMachine<'d, PIO, 1>,
+    sm2: StateMachine<'d, PIO, 2>,
+    sm3: StateMachine<'d, PIO, 3>,
+    pin0: Peri<'d, impl PioPin>,
+    pin1: Peri<'d, impl PioPin>,
+    pin2: Peri<'d, impl PioPin>,
+    pin3: Peri<'d, impl PioPin>,
+) -> (
+    DmxPio<'d, PIO, 0>,
+    DmxPio<'d, PIO, 1>,
+    DmxPio<'d, PIO, 2>,
+    DmxPio<'d, PIO, 3>,
+) {
+    // Load the DMX program once - all state machines share it
+    let prg = pio_asm!(
+        ".wrap_target"
+        "start:"
+        "    set pins, 1"           // Idle high
+        "    pull block"            // Wait for frame length
+        "    mov x, osr"            // Save byte count to X
+        "    set pins, 0"           // Start break (line low)
+        "    set y, 21"             // 22 iterations
+        "break_loop:"
+        "    jmp y-- break_loop [1]" // 2 cycles per iter = 44 cycles total
+        "    set pins, 1 [2]"       // MAB high, 3 cycles
+        "tx_byte:"
+        "    pull block"            // Get next byte from FIFO
+        "    set pins, 0"           // Start bit (low)
+        "    out pins, 1"           // Bit 0
+        "    out pins, 1"           // Bit 1
+        "    out pins, 1"           // Bit 2
+        "    out pins, 1"           // Bit 3
+        "    out pins, 1"           // Bit 4
+        "    out pins, 1"           // Bit 5
+        "    out pins, 1"           // Bit 6
+        "    out pins, 1"           // Bit 7
+        "    set pins, 1 [1]"       // 2 stop bit cycles
+        "    jmp x-- tx_byte"       // Loop for all bytes
+        ".wrap"
+    );
+
+    let installed = common.load_program(&prg.program);
+
+    (
+        DmxPio::new(common, sm0, pin0, &installed),
+        DmxPio::new(common, sm1, pin1, &installed),
+        DmxPio::new(common, sm2, pin2, &installed),
+        DmxPio::new(common, sm3, pin3, &installed),
+    )
+}

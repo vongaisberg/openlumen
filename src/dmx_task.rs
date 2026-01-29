@@ -1,10 +1,10 @@
-//! DMX output task
+//! DMX output tasks
 //!
-//! This task manages DMX frame transmission using PIO.
-//! The CPU controls the frame rate - frames are sent either:
-//! - On a fixed timer (20/30/44 Hz)
-//! - Immediately when new ArtNet data arrives
-//! - Matching the ArtNet sender's rate
+//! This module manages DMX frame transmission using PIO.
+//! Each DMX port runs as an independent task with its own timing:
+//! - Frames are sent immediately when new ArtNet data arrives
+//! - Periodic refresh frames are sent if no data arrives (1 Hz fallback)
+//! - Each port can run at different rates independently
 
 use defmt::*;
 use embassy_rp::gpio::Output;
@@ -15,10 +15,10 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
+use crate::dmx_pio::{DmxPio, DMX_FRAME_SIZE};
 use crate::schema::DmxPortConfig;
-use crate::dmx_pio::{DmxOutputs, DMX_FRAME_SIZE};
+#[allow(unused_imports)]
 use crate::schema::OutputRate;
-use crate::{log, web_task};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -27,9 +27,11 @@ use {defmt_rtt as _, panic_probe as _};
 pub static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; DMX_FRAME_SIZE]; 4]> =
     Mutex::new([[0u8; DMX_FRAME_SIZE]; 4]);
 
-/// Signal to notify DMX task of new data
-/// Each bit represents a port that has new data
-pub static DMX_NEW_DATA: Signal<ThreadModeRawMutex, u8> = Signal::new();
+/// Per-port signals to notify DMX tasks of new data
+pub static DMX_NEW_DATA_0: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static DMX_NEW_DATA_1: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static DMX_NEW_DATA_2: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static DMX_NEW_DATA_3: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 /// Default port configuration
 pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
@@ -37,7 +39,7 @@ pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
     universe: 0,
     merge_mode: crate::schema::MergeMode::Htp,
     output_rate: OutputRate::Hz44,
-    source_devices: Vec::new()
+    source_devices: Vec::new(),
 };
 
 /// Port configuration storage
@@ -54,119 +56,116 @@ fn rate_to_duration(rate: OutputRate) -> Duration {
     }
 }
 
-/// DMX output task using PIO
+/// Notify a specific port that new data is available
 ///
-/// This task:
-/// 1. Waits for new data or timer expiry
-/// 2. Reads the DMX buffer
-/// 3. Sends frames via PIO
-/// 4. Manages the RS485 driver enable pin
-#[embassy_executor::task]
-pub async fn send_dmx(
-    mut dmx_outputs: DmxOutputs<'static, PIO0>,
-    mut dmx1_dir: Output<'static>,
-    mut dmx2_dir: Output<'static>,
-    mut dmx3_dir: Output<'static>,
-    mut dmx4_dir: Output<'static>,
-) {
-    log!("[DMX] DMX task started").await;
-
-    // Statistics tracking
-    let mut frame_count: u32 = 0;
-    let mut last_stats_time = Instant::now();
-
-    // Default frame interval (1 Hz)
-    let default_interval = Duration::from_millis(1_000);
-
-    // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
-    // Full frame is ~23ms, we add 1ms gap minimum
-    let min_inter_frame = Duration::from_millis(1);
-
-    let mut last_frame_time = Instant::now();
-
-    loop {
-        // Determine frame interval based on port configuration
-        // For simplicity, use the fastest configured rate
-        let frame_interval = {
-            let config = DMX_PORT_CONFIG.lock().await;
-
-            //rate_to_duration(config[0].output_rate)
-            default_interval
-            
-        };
-
-        // Wait for either:
-        // 1. New data signal (immediate transmission)
-        // 2. Timer expiry (periodic transmission)
-        let elapsed = last_frame_time.elapsed();
-        let timeout = if elapsed >= frame_interval {
-            Duration::from_millis(0)
-        } else {
-            frame_interval - elapsed
-        };
-
-        match embassy_futures::select::select(
-           DMX_NEW_DATA.wait(),
-            Timer::after(timeout),
-        )
-        .await
-        {
-            embassy_futures::select::Either::First(port_mask) => {
-                // New data arrived - check minimum inter-frame gap
-                let since_last = last_frame_time.elapsed();
-                if since_last < min_inter_frame {
-                    Timer::after(min_inter_frame - since_last).await;
-        }
-                debug!("New ArtNet data, ports: 0b{:04b}", port_mask);
-        }
-            embassy_futures::select::Either::Second(_) => {
-                // Timer expired - periodic refresh
-            }
-        }
-
-        // Enable RS485 drivers (set DIR pins high for TX mode)
-        dmx1_dir.set_high();
-        dmx2_dir.set_high();
-        dmx3_dir.set_high();
-        dmx4_dir.set_high();
-
-        // Get a copy of the DMX buffers
-        let dmx_data = {
-            let buffer = DMX_BUFFER.lock().await;
-            buffer.clone()
-        };
-
-        // Send frames on all 4 ports concurrently
-        // PIO handles the precise timing (break, MAB, data)
-        dmx_outputs.send_all(&dmx_data).await;
-
-        // Small delay before disabling drivers (ensure last byte is transmitted)
-        Timer::after_micros(100).await;
-
-        // Disable RS485 drivers (optional - can leave enabled if preferred)
-        dmx1_dir.set_low();
-        dmx2_dir.set_low();
-        dmx3_dir.set_low();
-        dmx4_dir.set_low();
-
-        last_frame_time = Instant::now();
-        frame_count += 4; // 4 ports
-
-        // Statistics logging every second
-        let now = Instant::now();
-        if now.duration_since(last_stats_time) >= Duration::from_secs(1) {
-            let fps = frame_count;
-            debug!("DMX output: {} frames/sec ({} per port)", fps, fps / 4);
-            frame_count = 0;
-            last_stats_time = now;
-        }
+/// # Arguments
+/// * `port` - Port index (0-3)
+pub fn notify_port(port: usize) {
+    match port {
+        0 => DMX_NEW_DATA_0.signal(()),
+        1 => DMX_NEW_DATA_1.signal(()),
+        2 => DMX_NEW_DATA_2.signal(()),
+        3 => DMX_NEW_DATA_3.signal(()),
+        _ => {}
     }
 }
 
-/// Notify the DMX task that new data is available
-///
-/// # Arguments
-/// * `port_mask` - Bitmask of ports with new data (bit 0 = port 0, etc.)
-pub fn notify_new_data(port_mask: u8) {
-        DMX_NEW_DATA.signal(port_mask);
+/// Macro to generate per-port DMX tasks
+/// 
+/// Each task:
+/// 1. Waits on its signal OR a 1-second timeout
+/// 2. When signal received: sends frame immediately (with min inter-frame gap)
+/// 3. When timeout: sends periodic refresh frame
+/// 4. Tracks per-port statistics independently
+/// 5. Manages its own DIR pin
+macro_rules! define_dmx_task {
+    ($task_name:ident, $port:literal, $signal:ident) => {
+        #[embassy_executor::task]
+        pub async fn $task_name(
+            mut dmx_output: DmxPio<'static, PIO0, $port>,
+            mut dir_pin: Output<'static>,
+        ) {
+            info!("DMX task {} started", $port);
+
+            // Statistics tracking
+            let mut frame_count: u32 = 0;
+            let mut last_stats_time = Instant::now();
+
+            // Default frame interval (1 Hz fallback when no data)
+            let default_interval = Duration::from_millis(1_000);
+
+            // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
+            // Full frame is ~23ms, we add 1ms gap minimum
+            let min_inter_frame = Duration::from_millis(1);
+
+            let mut last_frame_time = Instant::now();
+
+            loop {
+                // Wait for either:
+                // 1. New data signal (immediate transmission)
+                // 2. Timer expiry (periodic transmission)
+                let elapsed = last_frame_time.elapsed();
+                let timeout = if elapsed >= default_interval {
+                    Duration::from_millis(0)
+                } else {
+                    default_interval - elapsed
+                };
+
+                match embassy_futures::select::select(
+                    $signal.wait(),
+                    Timer::after(timeout),
+                )
+                .await
+                {
+                    embassy_futures::select::Either::First(_) => {
+                        // New data arrived - check minimum inter-frame gap
+                        let since_last = last_frame_time.elapsed();
+                        if since_last < min_inter_frame {
+                            Timer::after(min_inter_frame - since_last).await;
+                        }
+                        debug!("Port {}: New ArtNet data", $port);
+                    }
+                    embassy_futures::select::Either::Second(_) => {
+                        // Timer expired - periodic refresh
+                    }
+                }
+
+                // Enable RS485 driver (set DIR pin high for TX mode)
+                dir_pin.set_high();
+                dir_pin.set_pad_isolation(false);
+                // Get a copy of this port's DMX buffer
+                let dmx_data = {
+                    let buffer = DMX_BUFFER.lock().await;
+                    buffer[$port]
+                };
+
+                // Send frame on this port
+                // PIO handles the precise timing (break, MAB, data)
+                dmx_output.send_frame(&dmx_data).await;
+
+                // Small delay before disabling driver (ensure last byte is transmitted)
+                Timer::after_micros(100).await;
+
+                // Disable RS485 driver
+                dir_pin.set_low();
+
+                last_frame_time = Instant::now();
+                frame_count += 1;
+
+                // Statistics logging every second
+                let now = Instant::now();
+                if now.duration_since(last_stats_time) >= Duration::from_secs(1) {
+                    debug!("DMX port {}: {} frames/sec", $port, frame_count);
+                    frame_count = 0;
+                    last_stats_time = now;
+                }
+            }
+        }
+    };
 }
+
+// Generate the 4 per-port DMX tasks
+define_dmx_task!(send_dmx_0, 0, DMX_NEW_DATA_0);
+define_dmx_task!(send_dmx_1, 1, DMX_NEW_DATA_1);
+define_dmx_task!(send_dmx_2, 2, DMX_NEW_DATA_2);
+define_dmx_task!(send_dmx_3, 3, DMX_NEW_DATA_3);

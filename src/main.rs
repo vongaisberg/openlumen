@@ -17,9 +17,8 @@ use crate::storage::flash_storage_adapter::FlashStorage;
 use crate::web_task::NETWORK_NODE_CONFIG;
 use artnet_task::artnet_task;
 use defmt::*;
-use dmx_pio::DmxOutputs;
-use dmx_task::send_dmx;
-use dmx_task::DMX_PORT_CONFIG;
+use dmx_pio::create_dmx_outputs;
+use dmx_task::{send_dmx_0, send_dmx_1, send_dmx_2, send_dmx_3};
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
@@ -332,7 +331,7 @@ async fn main(spawner: Spawner) {
         ..
     } = Pio::new(p.PIO0, Irqs);
 
-    let dmx_outputs = DmxOutputs::new(
+    let (dmx0, dmx1, dmx2, dmx3) = create_dmx_outputs(
         &mut common,
         sm0,
         sm1,
@@ -343,7 +342,7 @@ async fn main(spawner: Spawner) {
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
     );
-    log!("[MAIN] PIO DMX outputs initialized (all 4 SMs)").await;
+    log!("[MAIN] PIO DMX outputs initialized (4 independent SMs)").await;
 
     // Individual DIR pins for each DMX output (RS485 TX enable)
     let dmx1_dir = Output::new(p.PIN_5, Level::Low); // DMX1 DIR
@@ -358,7 +357,11 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(artnet_task(stack_ref, network_config.mac_address.clone()).unwrap());
 
-    spawner.spawn(send_dmx(dmx_outputs, dmx1_dir, dmx2_dir, dmx3_dir, dmx4_dir).unwrap());
+    // Spawn 4 independent DMX tasks - each port runs at its own rate
+    spawner.spawn(send_dmx_0(dmx0, dmx1_dir).unwrap());
+    spawner.spawn(send_dmx_1(dmx1, dmx2_dir).unwrap());
+    spawner.spawn(send_dmx_2(dmx2, dmx3_dir).unwrap());
+    spawner.spawn(send_dmx_3(dmx3, dmx4_dir).unwrap());
     
     // ========================================================================
     // Web Server Setup

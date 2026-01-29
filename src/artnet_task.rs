@@ -6,7 +6,7 @@
 use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
-use crate::dmx_task::{notify_new_data, DMX_BUFFER, DMX_PORT_CONFIG};
+use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG};
 use crate::log;
 use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode};
 use defmt::*;
@@ -79,8 +79,9 @@ pub static ARTNET_NODE_CONFIG: Mutex<ThreadModeRawMutex, ArtnetConfig> = Mutex::
 
 /// Sync runtime Art-Net configuration to local PollReply node_config
 ///
-/// This copies net, subnet, and device_name from ARTNET_NODE_CONFIG to the
-/// local node_config used for DMX filtering and ArtPollReply responses.
+/// This copies net, subnet, device_name from ARTNET_NODE_CONFIG and
+/// universe settings from DMX_PORT_CONFIG to the local node_config
+/// used for DMX filtering and ArtPollReply responses.
 async fn sync_artnet_config(node_config: &mut PollReply) {
     let config = ARTNET_NODE_CONFIG.lock().await;
     node_config.net = config.net;
@@ -93,6 +94,15 @@ async fn sync_artnet_config(node_config: &mut PollReply) {
     // Zero out the rest
     for i in copy_len..node_config.long_name.len() {
         node_config.long_name[i] = 0;
+    }
+    drop(config);
+
+    // Sync universe settings from DMX_PORT_CONFIG to sw_out
+    let dmx_config = DMX_PORT_CONFIG.lock().await;
+    for (i, port_config) in dmx_config.iter().enumerate() {
+        if i < node_config.sw_out.len() {
+            node_config.sw_out[i] = port_config.universe;
+        }
     }
 }
 
@@ -360,7 +370,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     }
 
                                     // Notify DMX task of new data
-                                    notify_new_data(1 << port_index);
+                                    notify_port(port_index);
                                 }
                             }
 
