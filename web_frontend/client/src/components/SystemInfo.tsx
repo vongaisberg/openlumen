@@ -36,6 +36,7 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
     firmwareVersion: [1, 0, 0],
     hardwareVersion: [1, 0, 0],
     uptime: 0,
+    temperature: 0,
   });
   
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
@@ -91,6 +92,10 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
               <div>
                 <h3 className="text-sm font-medium text-gray-700">Uptime</h3>
                 <p className="mt-1 text-sm text-gray-900">{formatUptime(systemData.uptime)}</p>
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-gray-700">CPU Temperature</h3>
+                <p className="mt-1 text-sm text-gray-900">{systemData.temperature}°C</p>
               </div>
             </div>
             
