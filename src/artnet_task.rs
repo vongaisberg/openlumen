@@ -19,6 +19,11 @@ use embassy_time::Instant;
 
 use {defmt_rtt as _, panic_probe as _};
 
+/// Number of DMX output ports
+const NUM_DMX_PORTS: usize = 4;
+/// Maximum ArtNet sources per port (for HTP/LTP merging)
+const MAX_SOURCES_PER_PORT: usize = 2;
+
 /// ArtNet statistics
 pub static ARTNET_STATS: Mutex<ThreadModeRawMutex, ArtnetStats> = Mutex::new(ArtnetStats {
     artdmx_count: 0,
@@ -76,6 +81,25 @@ pub static ARTNET_NODE_CONFIG: Mutex<ThreadModeRawMutex, ArtnetConfig> =
         id: None,
     });
 
+/// Sync runtime Art-Net configuration to local PollReply node_config
+/// 
+/// This copies net, subnet, and device_name from ARTNET_NODE_CONFIG to the
+/// local node_config used for DMX filtering and ArtPollReply responses.
+async fn sync_artnet_config(node_config: &mut PollReply) {
+    let config = ARTNET_NODE_CONFIG.lock().await;
+    node_config.net = config.net;
+    node_config.sub_net = config.subnet;
+    
+    // Copy device name to long_name
+    let name_bytes = config.device_name.as_bytes();
+    let copy_len = node_config.long_name.len().min(name_bytes.len());
+    node_config.long_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+    // Zero out the rest
+    for i in copy_len..node_config.long_name.len() {
+        node_config.long_name[i] = 0;
+    }
+}
+
 /// ArtNet receiver task
 #[embassy_executor::task]
 pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
@@ -110,7 +134,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
         error!("ArtNet task: No IPv4 configuration found!");
     }
 
-    // Node configuration for ArtPollReply - will be updated in the loop
+    // Node configuration for ArtPollReply - will be updated from ARTNET_NODE_CONFIG
     let mut node_config = PollReply {
         ip_address: ip,
         port: 6454,
@@ -159,6 +183,9 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
         user_data: [0; 2],
         refresh_rate: 44,
     };
+
+    // Initial sync of runtime Art-Net config to node_config
+    sync_artnet_config(&mut node_config).await;
 
     let mut dropped_packets = 0u32;
     let mut last_stats_update = Instant::now();
@@ -214,30 +241,39 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                             }
 
                             let port_index = match port_index {
-                                Some(idx) => idx,
-                                None => continue,
+                                Some(idx) if idx < NUM_DMX_PORTS => idx,
+                                _ => continue,
                             };
 
                             // Lock sources for this port
                             let mut sources = ARTNET_SOURCES.lock().await;
 
+                            // Defensive check for sources array bounds
+                            let port_sources = match sources.get_mut(port_index) {
+                                Some(s) => s,
+                                None => continue,
+                            };
+
                             // Find existing source or allocate new slot
                             let mut source_index = None;
-                            for i in 0..2 {
-                                if sources[port_index][i].ip == sender_ip
-                                    || !sources[port_index][i].active
-                                {
-                                    source_index = Some(i);
-                                    break;
+                            for i in 0..MAX_SOURCES_PER_PORT {
+                                if let Some(src) = port_sources.get(i) {
+                                    if src.ip == sender_ip || !src.active {
+                                        source_index = Some(i);
+                                        break;
+                                    }
                                 }
                             }
 
                             let source_idx = match source_index {
-                                Some(idx) => idx,
-                                None => continue,
+                                Some(idx) if idx < MAX_SOURCES_PER_PORT => idx,
+                                _ => continue,
                             };
 
-                            let source = &mut sources[port_index][source_idx];
+                            let source = match port_sources.get_mut(source_idx) {
+                                Some(s) => s,
+                                None => continue,
+                            };
 
                             // Initialize new source
                             if !source.active {
@@ -278,24 +314,31 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
 
                             // Copy DMX data to source buffer
                             source.last_packet_dmx[0] = 0; // Start code
-                            if length > 0 && 18 + length <= recv_buf.len() {
+                            if length > 0 && length <= 512 && 18 + length <= recv_buf.len() {
                                 source.last_packet_dmx[1..=length]
                                     .copy_from_slice(&recv_buf[18..18 + length]);
                             }
 
-                            // Get port config and merge data
-                            let port_config = &DMX_PORT_CONFIG.lock().await[port_index];
+                            // Get port config (safe: we validated port_index < NUM_DMX_PORTS above)
+                            let dmx_config = DMX_PORT_CONFIG.lock().await;
+                            let port_config = match dmx_config.get(port_index) {
+                                Some(cfg) => cfg.clone(),
+                                None => continue,
+                            };
+                            drop(dmx_config);
 
-                            // Lock main DMX buffer and merge
+                            // Lock main DMX buffer and merge (safe: validated port_index)
                             {
                                 let mut buffer = DMX_BUFFER.lock().await;
-                                buffer[port_index][0] = 0; // Start code
-                                merge_dmx_data(
-                                    &mut buffer[port_index],
-                                    &sources[port_index],
-                                    &port_config,
-                                    source_idx,
-                                );
+                                if let Some(port_buffer) = buffer.get_mut(port_index) {
+                                    port_buffer[0] = 0; // Start code
+                                    merge_dmx_data(
+                                        port_buffer,
+                                        port_sources,
+                                        &port_config,
+                                        source_idx,
+                                    );
+                                }
                             }
 
                             // Notify DMX task of new data
@@ -304,22 +347,17 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                     }
 
                     OPCODE_POLL => {
-                        // Update node config from runtime storage
-                        {
-                            let config = ARTNET_NODE_CONFIG.lock().await;
-                            node_config.net = config.net;
-                            node_config.sub_net = config.subnet;
-                            let name_bytes = config.device_name.as_bytes();
-                            let copy_len = node_config.long_name.len().min(name_bytes.len());
-                            node_config.long_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-                            // Zero out the rest
-                            for i in copy_len..node_config.long_name.len() {
-                                node_config.long_name[i] = 0;
-                            }
-                        }
+                        // Ensure config is up to date before replying
+                        sync_artnet_config(&mut node_config).await;
                         
                         let mut reply_buf = [0u8; 240];
-                        let len = node_config.to_buffer(&mut reply_buf);
+                        let len = match node_config.to_buffer(&mut reply_buf) {
+                            Ok(len) => len,
+                            Err(e) => {
+                                error!("Failed to serialize ArtPollReply: {:?}", e);
+                                continue;
+                            }
+                        };
 
                         if let Err(e) = socket.send_to(&reply_buf[..len], ep.endpoint).await {
                             error!("Failed to send ArtPollReply: {:?}", e);
@@ -336,8 +374,11 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
             }
         }
 
-        // Update statistics every second
+        // Update statistics and sync configuration every second
         if now.duration_since(last_stats_update) >= embassy_time::Duration::from_secs(1) {
+            // Proactively sync Art-Net config so changes take effect without waiting for ArtPoll
+            sync_artnet_config(&mut node_config).await;
+
             let mut total_packet_count = 0u32;
 
             let mut sources = ARTNET_SOURCES.lock().await;
@@ -373,32 +414,45 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
 /// Merge DMX data from multiple sources according to merge mode
 fn merge_dmx_data(
     buffer: &mut [u8; 513],
-    sources: &[ArtnetSource; 2],
+    sources: &[ArtnetSource; MAX_SOURCES_PER_PORT],
     config: &DmxPortConfig,
     source_index: usize,
 ) {
-    if sources[0].active && sources[1].active {
+    // Validate source_index
+    let source_index = if source_index < MAX_SOURCES_PER_PORT {
+        source_index
+    } else {
+        return; // Invalid source index, nothing to merge
+    };
+
+    let other_index = 1 - source_index;
+
+    // Safe access with bounds checking
+    let current_source = &sources[source_index];
+    let other_source = &sources[other_index];
+
+    if current_source.active && other_source.active {
         match config.merge_mode {
             MergeMode::Htp => {
                 for i in 1..=512 {
-                    buffer[i] = sources[source_index].last_packet_dmx[i]
-                        .max(sources[1 - source_index].last_packet_dmx[i]);
+                    buffer[i] = current_source.last_packet_dmx[i]
+                        .max(other_source.last_packet_dmx[i]);
                 }
             }
             MergeMode::Ltp => {
-                buffer[1..=512].copy_from_slice(&sources[source_index].last_packet_dmx[1..=512]);
+                buffer[1..=512].copy_from_slice(&current_source.last_packet_dmx[1..=512]);
             }
             MergeMode::Priority => {
                 let priority_source = if sources[0].last_packet_sequence < sources[1].last_packet_sequence {
-                    0
+                    &sources[0]
                 } else {
-                    1
+                    &sources[1]
                 };
-                buffer[1..=512].copy_from_slice(&sources[priority_source].last_packet_dmx[1..=512]);
+                buffer[1..=512].copy_from_slice(&priority_source.last_packet_dmx[1..=512]);
             }
         }
     } else {
-        buffer[1..=512].copy_from_slice(&sources[source_index].last_packet_dmx[1..=512]);
+        buffer[1..=512].copy_from_slice(&current_source.last_packet_dmx[1..=512]);
     }
 }
 

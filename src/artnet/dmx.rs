@@ -1,3 +1,5 @@
+use super::ArtNetError;
+
 const ART_DMX_OPCODE: u16 = 0x5000;
 
 #[derive(Debug)]
@@ -17,20 +19,38 @@ pub struct ArtDmx {
 }
 
 impl ArtDmx {
+    /// Parse an ArtDmx packet from a buffer.
+    /// Returns None if the buffer is too small or malformed.
     pub fn from_buffer(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 19 {
+        // Minimum packet size: 8 (header) + 2 (opcode) + 2 (version) + 1 (seq) + 1 (phys) + 2 (universe) + 2 (length) = 18
+        // Plus at least 1 byte of data
+        if buf.len() < 18 {
             return None;
         }
+
+        let length = u16::from_be_bytes([buf[16], buf[17]]) as usize;
+
+        // Validate DMX length: must be > 0 and <= 512
+        if length == 0 || length > 512 {
+            return None;
+        }
+
+        // Validate buffer has enough data: header (18 bytes) + DMX data (length bytes)
+        if buf.len() < 18 + length {
+            return None;
+        }
+
         let mut res = Self {
             sequence: buf[12],
             physical: buf[13],
             sub_uni: buf[14],
             net: buf[15],
-            length: u16::from_be_bytes([buf[16], buf[17]]),
+            length: length as u16,
             data: [0; 512],
         };
 
-        res.data.copy_from_slice(&buf[18..18 + res.length as usize]);
+        // Safe: we validated that buf.len() >= 18 + length and length <= 512
+        res.data[..length].copy_from_slice(&buf[18..18 + length]);
 
         Some(res)
     }

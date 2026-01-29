@@ -13,6 +13,7 @@ use crate::schema::{
     TypedMessage,
 };
 use crate::storage::{self, file_system};
+use crate::system;
 use defmt::*;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -63,8 +64,8 @@ pub async fn get_config() -> (
             id: None,
             firmware_version: [1, 0, 0],
             hardware_version: [2, 0, 0], // RP2350 hardware
-            uptime: Instant::now().as_secs() as u32,                   // TODO: Track actual uptime
-            temperature: 0,              // TODO: Read from RP2350 temp sensor
+            uptime: system::uptime_secs(),
+            temperature: system::read_temperature_c(),
             artnet_traffic: stats.artdmx_count,
             packet_loss: stats.drop_rate,
             system_status: String::try_from("Running").unwrap_or_default(),
@@ -244,11 +245,8 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                     "LOG: ArtNet configuration update received",
                                                 )
                                                 .await;
-                                            // Note: ArtNet config changes may require ArtNet task restart
-                                            // For now, we'll just save it to flash
-                                            // TODO: Apply ArtNet config changes at runtime
-
                                             // Update runtime ArtNet config
+                                            // Note: Changes take effect within 1 second via periodic sync in artnet_task
                                             {
                                                 let mut node_config =
                                                     ARTNET_NODE_CONFIG.lock().await;
@@ -358,15 +356,18 @@ async fn send_state_update<
 
     let mut dmx_ports_with_sources: Vec<DmxPortConfig, 4> = dmx_ports.clone();
     for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
-        port.source_devices = artnet_sources[i]
-            .iter()
-            .filter(|source| source.active)
-            .map(|source| SourceDevice {
-                name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
-                ip: source.ip,
-                packets_per_second: Some(source.frequency),
-            })
-            .collect();
+        // Safe bounds check for artnet_sources array access
+        if let Some(sources) = artnet_sources.get(i) {
+            port.source_devices = sources
+                .iter()
+                .filter(|source| source.active)
+                .map(|source| SourceDevice {
+                    name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
+                    ip: source.ip,
+                    packets_per_second: Some(source.frequency),
+                })
+                .collect();
+        }
     }
 
     let status = StateUpdate {
@@ -387,6 +388,9 @@ async fn send_state_update<
     }
 }
 
+/// Number of DMX ports
+const NUM_DMX_PORTS: usize = 4;
+
 /// Send DMX data update over WebSocket
 async fn send_dmx_update<
     R: embedded_io_async::Read,
@@ -395,14 +399,24 @@ async fn send_dmx_update<
     tx: &mut ws::SocketTx<W>,
     port: u8,
 ) {
+    // Validate port index
+    let port_idx = port as usize;
+    if port_idx >= NUM_DMX_PORTS {
+        warn!("Invalid DMX port index: {}", port);
+        return;
+    }
+
     let mut dmx_outputs = Vec::new();
 
     let dmx_buffer = DMX_BUFFER.lock().await;
 
-    let _ = dmx_outputs.push(DmxPortOutput {
-        port_number: port,
-        dmx_data: Vec::from_slice(&dmx_buffer[port as usize][1..513]).unwrap_or_default(),
-    });
+    // Safe: we validated port_idx < NUM_DMX_PORTS above
+    if let Some(port_buffer) = dmx_buffer.get(port_idx) {
+        let _ = dmx_outputs.push(DmxPortOutput {
+            port_number: port,
+            dmx_data: Vec::from_slice(&port_buffer[1..513]).unwrap_or_default(),
+        });
+    }
 
     let update = DmxOutputUpdate {
         type_: "dmxOutputUpdate",

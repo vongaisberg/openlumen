@@ -1,14 +1,13 @@
-use embassy_rp::{gpio::Output, rom_data, Peri};
+use embassy_rp::{rom_data, Peri};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, signal::Signal};
-
 use core::fmt::Write;
-use embassy_time::{block_for, Duration, Timer};
+
 use heapless::{String, Vec};
 use littlefs2::{
-    fs::{Allocation, File, Filesystem, OpenOptions},
+    fs::{Filesystem},
     path,
 };
-use littlefs2_core::{Error, Path, SeekFrom};
+use littlefs2_core::Path;
 
 use crate::{
     artnet_task::ARTNET_NODE_CONFIG,
@@ -20,6 +19,7 @@ use crate::{
 };
 
 use crate::log;
+
 #[derive(PartialEq, Eq)]
 pub enum SettingsStoreSignal {
     Save,
@@ -60,9 +60,11 @@ pub async fn file_system_task(
             }
         }
     };
+    
+    let free_space = fs.available_space().unwrap_or(0);
     try_log!(
         "[FLASH] Filesystem mounted successfully. Free space: {}",
-        fs.available_space().unwrap()
+        free_space
     );
 
     load_settings(&fs).await;
@@ -77,96 +79,155 @@ pub async fn file_system_task(
     }
 }
 
+/// Result of loading settings from flash
+enum LoadResult {
+    /// Settings loaded successfully
+    Success,
+    /// Settings file was empty or missing - created defaults
+    CreatedDefaults,
+    /// Settings had wrong version - needs reset
+    VersionMismatch,
+    /// Settings failed to parse - needs reset
+    ParseError,
+    /// I/O error reading settings
+    IoError,
+}
+
 pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     let mut buffer = [0u8; 1024 * 5];
+    let mut load_result = LoadResult::Success;
 
-    //fs.remove(SETTINGS_PATH).unwrap();
-    // Check if file exists and create it if it doesn't
-    match fs.open_file_with_options_and_then(
-        |options| options.read(true).write(true).create(true),
-        SETTINGS_PATH,
-        |file| {
-            // Check if file exists
-            if file.is_empty().unwrap_or(true) {
-                let length =
-                    serde_json_core::to_slice(&StoredSettings::default(), &mut buffer).unwrap();
-                try_log!(
-                    "[FLASH] Settings file does not exist. Creating default settings. Length: {}",
-                    length
-                );
-                let mut buffer_vec: Vec<u8, 100> = Vec::new();
-                for i in 0..100 {
-                    buffer_vec.push(buffer[i]);
-                }
-                try_log!("{}", &String::from_utf8(buffer_vec).unwrap());
-                match file.write(&buffer[0..length]) {
-                    Ok(_) => {
-                        try_log!("[FLASH] Settings file created successfully.");
-                    }
-                    Err(e) => {
-                        try_log!("[FLASH] Failed to create settings file. Error: {:?}", e);
-                    }
-                }
-            }
-            Ok(())
-        },
-    ) {
-        Ok(_) => {}
-        Err(e) => {
-            try_log!(
-                "[FLASH] Failed to check existence of settings file. Error: {:?}",
-                e
-            );
-        }
-    }
-
-    buffer = [0u8; 1024 * 5];
-
-    // Read settings from file
-    let _ = fs.open_file_with_options_and_then(
+    // Step 1: Try to read and parse existing settings
+    let read_result = fs.open_file_with_options_and_then(
         |options| options.read(true).write(false).create(false),
         SETTINGS_PATH,
         |file| {
-            let length = file.len().unwrap();
-            try_log!(
-                "[FLASH] Reading settings from filesystem. Length: {}",
-                length
-            );
+            let length = match file.len() {
+                Ok(len) => len,
+                Err(e) => {
+                    try_log!("[FLASH] Failed to get file length: {:?}", e);
+                    load_result = LoadResult::IoError;
+                    return Ok(());
+                }
+            };
 
-            file.read(&mut buffer[0..length]).unwrap();
+            if length == 0 {
+                try_log!("[FLASH] Settings file is empty, will create defaults");
+                load_result = LoadResult::CreatedDefaults;
+                return Ok(());
+            }
+
+            try_log!("[FLASH] Reading settings from filesystem. Length: {}", length);
+
+            if let Err(e) = file.read(&mut buffer[0..length]) {
+                try_log!("[FLASH] Failed to read settings file: {:?}", e);
+                load_result = LoadResult::IoError;
+                return Ok(());
+            }
+
             log_until_null(&buffer[0..length]);
 
             match serde_json_core::from_slice::<StoredSettings>(&buffer[0..length]) {
                 Ok((settings, _)) => {
-                    
-                    DMX_PORT_CONFIG
-                        .try_lock()
-                        .unwrap()
-                        .clone_from(&settings.dmx_ports);
-                    ARTNET_NODE_CONFIG
-                        .try_lock()
-                        .unwrap()
-                        .clone_from(&settings.artnet_config);
-                    NETWORK_NODE_CONFIG
-                        .try_lock()
-                        .unwrap()
-                        .clone_from(&settings.network_config);
-                    try_log!("[FLASH] Settings version {} loaded from filesystem", settings.version);
+                    // Check version before applying settings
+                    if settings.version != SETTINGS_VERSION {
+                        try_log!(
+                            "[FLASH] Settings version mismatch: stored={}, expected={}. Resetting to defaults.",
+                            settings.version,
+                            SETTINGS_VERSION
+                        );
+                        load_result = LoadResult::VersionMismatch;
+                        return Ok(());
+                    }
+
+                    // Apply settings to runtime configs
+                    if let Ok(mut dmx_config) = DMX_PORT_CONFIG.try_lock() {
+                        dmx_config.clone_from(&settings.dmx_ports);
+                    } else {
+                        try_log!("[FLASH] Warning: Could not lock DMX_PORT_CONFIG");
+                    }
+
+                    if let Ok(mut artnet_config) = ARTNET_NODE_CONFIG.try_lock() {
+                        artnet_config.clone_from(&settings.artnet_config);
+                    } else {
+                        try_log!("[FLASH] Warning: Could not lock ARTNET_NODE_CONFIG");
+                    }
+
+                    if let Ok(mut network_config) = NETWORK_NODE_CONFIG.try_lock() {
+                        network_config.clone_from(&settings.network_config);
+                    } else {
+                        try_log!("[FLASH] Warning: Could not lock NETWORK_NODE_CONFIG");
+                    }
+
+                    try_log!("[FLASH] Settings version {} loaded successfully", settings.version);
+                    load_result = LoadResult::Success;
                 }
                 Err(e) => {
                     try_log!(
-                        "[FLASH] Failed to load settings from filesystem, error: {:?}",
+                        "[FLASH] Failed to parse settings: {:?}. Resetting to defaults.",
                         e
                     );
                     log_until_null(&buffer[0..length]);
+                    load_result = LoadResult::ParseError;
                 }
             }
-
-            // TODO: Check settings version
 
             Ok(())
         },
     );
+
+    // If file doesn't exist, mark as needing defaults
+    if read_result.is_err() {
+        try_log!("[FLASH] Settings file not found, creating defaults");
+        load_result = LoadResult::CreatedDefaults;
+    }
+
+    // Step 2: If we need to reset/create settings, do so now
+    match load_result {
+        LoadResult::Success => {
+            // Settings loaded successfully, nothing more to do
+        }
+        LoadResult::CreatedDefaults | LoadResult::VersionMismatch | LoadResult::ParseError | LoadResult::IoError => {
+            try_log!("[FLASH] Creating default settings file");
+            
+            // Remove existing file if present (ignore errors - file might not exist)
+            let _ = fs.remove(SETTINGS_PATH);
+
+            // Serialize default settings
+            let default_settings = StoredSettings::default();
+            let length = match serde_json_core::to_slice(&default_settings, &mut buffer) {
+                Ok(len) => len,
+                Err(e) => {
+                    try_log!("[FLASH] Failed to serialize default settings: {:?}", e);
+                    return;
+                }
+            };
+
+            // Write default settings to file
+            let write_result = fs.open_file_with_options_and_then(
+                |options| options.read(false).write(true).create(true).truncate(true),
+                SETTINGS_PATH,
+                |file| {
+                    match file.write(&buffer[0..length]) {
+                        Ok(_) => {
+                            try_log!("[FLASH] Default settings file created successfully");
+                        }
+                        Err(e) => {
+                            try_log!("[FLASH] Failed to write default settings: {:?}", e);
+                        }
+                    }
+                    Ok(())
+                },
+            );
+
+            if let Err(e) = write_result {
+                try_log!("[FLASH] Failed to create settings file: {:?}", e);
+            }
+
+            // Runtime configs already have defaults from their static initializers,
+            // so we don't need to explicitly apply them
+        }
+    }
 }
 
 async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
@@ -174,36 +235,71 @@ async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
 
     let mut buffer = [0u8; 1024];
 
+    // Collect settings from runtime configs with error handling
+    let dmx_ports = match DMX_PORT_CONFIG.try_lock() {
+        Ok(config) => config.clone(),
+        Err(_) => {
+            try_log!("[FLASH] Warning: Could not lock DMX_PORT_CONFIG for save, using defaults");
+            core::array::from_fn(crate::schema::DmxPortConfig::default_with_universe)
+        }
+    };
+
+    let network_config = match NETWORK_NODE_CONFIG.try_lock() {
+        Ok(config) => config.clone(),
+        Err(_) => {
+            try_log!("[FLASH] Warning: Could not lock NETWORK_NODE_CONFIG for save, using defaults");
+            crate::schema::NetworkConfig::default()
+        }
+    };
+
+    let artnet_config = match ARTNET_NODE_CONFIG.try_lock() {
+        Ok(config) => config.clone(),
+        Err(_) => {
+            try_log!("[FLASH] Warning: Could not lock ARTNET_NODE_CONFIG for save, using defaults");
+            crate::schema::ArtnetConfig::default()
+        }
+    };
+
     let settings = StoredSettings {
         version: SETTINGS_VERSION,
-        dmx_ports: DMX_PORT_CONFIG.try_lock().unwrap().clone(),
-        network_config: NETWORK_NODE_CONFIG.try_lock().unwrap().clone(),
-        artnet_config: ARTNET_NODE_CONFIG.try_lock().unwrap().clone(),
+        dmx_ports,
+        network_config,
+        artnet_config,
     };
-    let length = serde_json_core::to_slice(&settings, &mut buffer).unwrap();
 
-    fs.remove(SETTINGS_PATH).unwrap();
+    let length = match serde_json_core::to_slice(&settings, &mut buffer) {
+        Ok(len) => len,
+        Err(e) => {
+            try_log!("[FLASH] Failed to serialize settings: {:?}", e);
+            return;
+        }
+    };
 
+    // Remove existing file - ignore errors (file might not exist)
+    if let Err(e) = fs.remove(SETTINGS_PATH) {
+        // Only log if it's not a "not found" error
+        try_log!("[FLASH] Note: Could not remove old settings file: {:?}", e);
+    }
+
+    // Write new settings file
     match fs.open_file_with_options_and_then(
-        |options| options.read(true).write(true).create(true),
+        |options| options.read(false).write(true).create(true).truncate(true),
         SETTINGS_PATH,
         |file| {
             match file.write(&buffer[0..length]) {
                 Ok(_) => {
-                    try_log!("[FLASH] Settings saved to filesystem");
+                    try_log!("[FLASH] Settings saved to filesystem successfully");
                 }
                 Err(e) => {
-                    try_log!("[FLASH] Failed to save settings to filesystem, error: {:?}", e);
+                    try_log!("[FLASH] Failed to write settings to filesystem: {:?}", e);
                 }
             }
             Ok(())
         },
     ) {
-        Ok(_) => {
-            
-        }
+        Ok(_) => {}
         Err(e) => {
-            try_log!("[FLASH] Failed to save settings to filesystem, error: {:?}", e);
+            try_log!("[FLASH] Failed to open settings file for writing: {:?}", e);
         }
     }
 }

@@ -1,8 +1,11 @@
 use bitflags::bitflags;
 
+use super::ArtNetError;
+
 const ART_POLL_REPLY_OPCODE: u16 = 0x2100;
 
 pub const BUFFER_SIZE: usize = 240; // Standard ArtPollReply size
+
 pub struct PollReply {
     /// Array containing the Node’s IP address. First
     /// array entry is most significant byte of address.
@@ -94,8 +97,14 @@ pub struct PollReply {
 }
 
 impl PollReply {
-    pub fn to_buffer(&self, buf: &mut [u8]) -> usize {
-        buf[0..8].copy_from_slice(&"Art-Net\0".as_bytes());
+    /// Write the PollReply message to a buffer.
+    /// Returns the number of bytes written on success, or an error if buffer is too small.
+    pub fn to_buffer(&self, buf: &mut [u8]) -> Result<usize, ArtNetError> {
+        if buf.len() < BUFFER_SIZE {
+            return Err(ArtNetError::BufferTooSmall);
+        }
+
+        buf[0..8].copy_from_slice(b"Art-Net\0");
         buf[8] = 0x00;
         buf[9] = 0x21;
         buf[10] = self.ip_address[0];
@@ -167,7 +176,7 @@ impl PollReply {
         buf[227] = (self.refresh_rate >> 8) as u8;
         buf[228] = self.refresh_rate as u8;
         buf[229..240].fill(0);
-        return 240;
+        Ok(BUFFER_SIZE)
     }
 }
 
@@ -377,3 +386,5 @@ bitflags! {
         const RDMnet = 0b00000100;
     }
 }
+
+

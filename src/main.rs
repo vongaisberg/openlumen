@@ -9,6 +9,7 @@ mod dmx_task;
 mod log;
 mod schema;
 mod storage;
+pub mod system;
 mod web_task;
 
 use crate::storage::file_system;
@@ -138,6 +139,9 @@ async fn main(spawner: Spawner) {
 
     // Initialize RP2350 peripherals
     let p = embassy_rp::init(Default::default());
+
+    // Initialize system telemetry (uptime tracking and temperature sensor)
+    system::init(p.ADC, p.ADC_TEMP_SENSOR);
 
     // LED for status indication
     let mut led = Output::new(p.PIN_25, Level::Low);
