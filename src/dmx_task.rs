@@ -5,10 +5,13 @@
 //! - Frames are sent immediately when new ArtNet data arrives
 //! - Periodic refresh frames are sent if no data arrives (1 Hz fallback)
 //! - Each port can run at different rates independently
+//! - PortMode Inactive: DIR and data pins set floating (high-Z)
+//! - PortMode Blackout: send all-zero DMX frame
 
 use defmt::*;
-use embassy_rp::gpio::Output;
+use embassy_rp::gpio::{Flex, Pull};
 use embassy_rp::peripherals::PIO0;
+use embassy_rp::pac;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -16,13 +19,38 @@ use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
 use crate::dmx_pio::{DmxPio, DMX_FRAME_SIZE};
-use crate::schema::DmxPortConfig;
+use crate::schema::{DmxPortConfig, PortMode};
 #[allow(unused_imports)]
 use crate::schema::OutputRate;
 
 use {defmt_rtt as _, panic_probe as _};
 
 use crate::log;
+
+/// Set data pin to SIO input (floating) when port is Inactive. RP2350 only.
+fn set_data_pin_sio_floating(pin_index: u8) {
+    let bank = (pin_index / 32) as usize;
+    let bit = 1u32 << (pin_index % 32);
+    pac::IO_BANK0.gpio(pin_index as _).ctrl().write(|w| {
+        w.set_funcsel(pac::io::vals::Gpio0ctrlFuncsel::SIOB_PROC_0 as _);
+    });
+    pac::SIO.gpio_oe(bank).value_clr().write_value(bit);
+    pac::PADS_BANK0.gpio(pin_index as _).write(|w| {
+        w.set_ie(true);
+        w.set_pue(false);
+        w.set_pde(false);
+    });
+}
+
+/// Set data pin back to PIO so the state machine can drive it (Active/Blackout). RP2350 only.
+fn set_data_pin_pio(pin_index: u8) {
+    pac::IO_BANK0.gpio(pin_index as _).ctrl().write(|w| {
+        w.set_funcsel(pac::io::vals::Gpio0ctrlFuncsel::PIO0_0 as _);
+    });
+}
+
+/// Zero DMX frame (start code 0x00 + 512 zero bytes) for Blackout mode.
+const ZERO_FRAME: [u8; DMX_FRAME_SIZE] = [0u8; DMX_FRAME_SIZE];
 
 /// Global DMX buffer for 4 ports
 /// Each port has 513 bytes: 1 start code (0x00) + 512 channels
@@ -73,39 +101,30 @@ pub fn notify_port(port: usize) {
 }
 
 /// Macro to generate per-port DMX tasks
-/// 
+///
 /// Each task:
 /// 1. Waits on its signal OR a 1-second timeout
-/// 2. When signal received: sends frame immediately (with min inter-frame gap)
-/// 3. When timeout: sends periodic refresh frame
-/// 4. Tracks per-port statistics independently
-/// 5. Manages its own DIR pin
+/// 2. Reads port mode (Active / Inactive / Blackout)
+/// 3. Inactive: DIR and data pin set floating, skip send
+/// 4. Active/Blackout: DIR output, data pin PIO, send buffer or zero frame
+/// 5. Tracks per-port statistics independently
 macro_rules! define_dmx_task {
     ($task_name:ident, $port:literal, $signal:ident) => {
         #[embassy_executor::task]
         pub async fn $task_name(
             mut dmx_output: DmxPio<'static, PIO0, $port>,
-            mut dir_pin: Output<'static>,
+            mut dir_pin: Flex<'static>,
+            data_pin_index: u8,
         ) {
             log!("[DMX{}] Task started", $port).await;
 
-            // Statistics tracking
             let mut frame_count: u32 = 0;
             let mut last_stats_time = Instant::now();
-
-            // Default frame interval (1 Hz fallback when no data)
             let default_interval = Duration::from_millis(1_000);
-
-            // Minimum inter-frame gap (after a 513-byte frame at 250kbaud)
-            // Full frame is ~23ms, we add 1ms gap minimum
             let min_inter_frame = Duration::from_millis(1);
-
             let mut last_frame_time = Instant::now();
 
             loop {
-                // Wait for either:
-                // 1. New data signal (immediate transmission)
-                // 2. Timer expiry (periodic transmission)
                 let elapsed = last_frame_time.elapsed();
                 let timeout = if elapsed >= default_interval {
                     Duration::from_millis(0)
@@ -120,40 +139,54 @@ macro_rules! define_dmx_task {
                 .await
                 {
                     embassy_futures::select::Either::First(_) => {
-                        // New data arrived - check minimum inter-frame gap
                         let since_last = last_frame_time.elapsed();
                         if since_last < min_inter_frame {
                             Timer::after(min_inter_frame - since_last).await;
                         }
                     }
-                    embassy_futures::select::Either::Second(_) => {
-                        // Timer expired - periodic refresh
-                    }
+                    embassy_futures::select::Either::Second(_) => {}
                 }
 
-                // Enable RS485 driver (set DIR pin high for TX mode)
+                let mode = {
+                    let config = DMX_PORT_CONFIG.lock().await;
+                    config[$port].mode
+                };
+
+                if mode == PortMode::Inactive {
+                    dir_pin.set_pull(Pull::None);
+                    dir_pin.set_as_input();
+                    dmx_output.set_sm_enable(false);
+                    set_data_pin_sio_floating(data_pin_index);
+                    last_frame_time = Instant::now();
+                    continue;
+                }
+
+                set_data_pin_pio(data_pin_index);
+                dmx_output.set_sm_enable(true);
+                dir_pin.set_as_output();
+
                 dir_pin.set_high();
                 dir_pin.set_pad_isolation(false);
-                // Get a copy of this port's DMX buffer
+
                 let dmx_data = {
                     let buffer = DMX_BUFFER.lock().await;
                     buffer[$port]
                 };
 
-                // Send frame on this port
-                // PIO handles the precise timing (break, MAB, data)
-                dmx_output.send_frame(&dmx_data).await;
+                let frame_to_send: &[u8; DMX_FRAME_SIZE] = if mode == PortMode::Blackout {
+                    &ZERO_FRAME
+                } else {
+                    &dmx_data
+                };
 
-                // Small delay before disabling driver (ensure last byte is transmitted)
+                dmx_output.send_frame(frame_to_send).await;
+
                 Timer::after_micros(100).await;
-
-                // Disable RS485 driver
                 dir_pin.set_low();
 
                 last_frame_time = Instant::now();
                 frame_count += 1;
 
-                // Statistics logging every second
                 let now = Instant::now();
                 if now.duration_since(last_stats_time) >= Duration::from_secs(1) {
                     debug!("DMX port {}: {} frames/sec", $port, frame_count);

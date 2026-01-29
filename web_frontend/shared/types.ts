@@ -5,7 +5,7 @@ export interface NetworkConfig {
   ipAddress?: number[];
   subnetMask?: number[];
   gateway?: number[];
-  macAddress: string; // Read-only - hardware MAC address
+  macAddress: string | number[]; // Read-only - backend sends [u8; 6] as number[]
   currentIpAddress?: number[]; // Read-only - current actual IP
   currentSubnetMask?: number[]; // Read-only - current actual subnet
   currentGateway?: number[]; // Read-only - current actual gateway

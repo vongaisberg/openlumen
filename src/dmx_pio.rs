@@ -103,6 +103,12 @@ impl<'d, PIO: Instance, const SM: usize> DmxPio<'d, PIO, SM> {
         embassy_time::Timer::after_micros(50).await;
     }
 
+    /// Enable or disable the PIO state machine.
+    /// When disabled, the SM stops driving the output pin (used for Inactive/floating).
+    pub fn set_sm_enable(&mut self, enable: bool) {
+        self.sm.set_enable(enable);
+    }
+
     #[allow(dead_code)]
     pub fn is_idle(&mut self) -> bool {
         self.sm.tx().empty()

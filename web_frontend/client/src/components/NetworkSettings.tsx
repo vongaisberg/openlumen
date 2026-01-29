@@ -25,6 +25,14 @@ const ipArrayToString = (ip: number[] | undefined): string => {
   return ip.join(".");
 };
 
+// Format MAC address: backend sends [u8; 6] as number[], display as XX:XX:XX:XX:XX:XX
+const macAddressToString = (mac: number[] | string | undefined): string => {
+  if (mac == null) return "";
+  if (typeof mac === "string") return mac;
+  if (!Array.isArray(mac) || mac.length !== 6) return "";
+  return mac.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+};
+
 // Helper function to convert IP string to array
 const ipStringToArray = (ip: string): number[] | undefined => {
   if (!ip) return undefined;
@@ -250,7 +258,7 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
               </div>
               <div>
                 <span className="text-gray-500">MAC Address:</span>
-                <span className="ml-2 text-gray-900">{data?.networkConfig?.macAddress || "F8:4D:89:7C:0B:A2"}</span>
+                <span className="ml-2 text-gray-900">{macAddressToString(data?.networkConfig?.macAddress) || "—"}</span>
               </div>
             </div>
           </div>

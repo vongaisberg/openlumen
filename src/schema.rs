@@ -191,7 +191,7 @@ pub struct DmxOutputUpdate {
     pub data: Vec<DmxPortOutput, 4>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Copy)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Copy, PartialEq, Eq)]
 pub enum PortMode {
     #[serde(rename = "Active")]
     #[default]

@@ -24,7 +24,7 @@ use embassy_futures::yield_now;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
-use embassy_rp::gpio::{Input, Level, Output, Pull};
+use embassy_rp::gpio::{Flex, Input, Level, Output, Pull};
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
@@ -344,12 +344,19 @@ async fn main(spawner: Spawner) {
     );
     log!("[MAIN] PIO DMX outputs initialized (4 independent SMs)").await;
 
-    // Individual DIR pins for each DMX output (RS485 TX enable)
-    let dmx1_dir = Output::new(p.PIN_5, Level::Low); // DMX1 DIR
-    let dmx2_dir = Output::new(p.PIN_8, Level::Low); // DMX2 DIR
-    let dmx3_dir = Output::new(p.PIN_11, Level::Low); // DMX3 DIR
-    let dmx4_dir = Output::new(p.PIN_14, Level::Low); // DMX4 DIR
-
+    // Individual DIR pins for each DMX output (RS485 TX enable) - Flex so we can set floating when Inactive
+    let mut dmx1_dir = Flex::new(p.PIN_5);
+    dmx1_dir.set_low();
+    dmx1_dir.set_as_output();
+    let mut dmx2_dir = Flex::new(p.PIN_8);
+    dmx2_dir.set_low();
+    dmx2_dir.set_as_output();
+    let mut dmx3_dir = Flex::new(p.PIN_11);
+    dmx3_dir.set_low();
+    dmx3_dir.set_as_output();
+    let mut dmx4_dir = Flex::new(p.PIN_14);
+    dmx4_dir.set_low();
+    dmx4_dir.set_as_output();
 
     // ========================================================================
     // Spawn Application Tasks
@@ -358,10 +365,11 @@ async fn main(spawner: Spawner) {
     spawner.spawn(artnet_task(stack_ref, network_config.mac_address.clone()).unwrap());
 
     // Spawn 4 independent DMX tasks - each port runs at its own rate
-    spawner.spawn(send_dmx_0(dmx0, dmx1_dir).unwrap());
-    spawner.spawn(send_dmx_1(dmx1, dmx2_dir).unwrap());
-    spawner.spawn(send_dmx_2(dmx2, dmx3_dir).unwrap());
-    spawner.spawn(send_dmx_3(dmx3, dmx4_dir).unwrap());
+    // Data pin indices: 4, 7, 10, 13 (PIN_4, PIN_7, PIN_10, PIN_13)
+    spawner.spawn(send_dmx_0(dmx0, dmx1_dir, 4).unwrap());
+    spawner.spawn(send_dmx_1(dmx1, dmx2_dir, 7).unwrap());
+    spawner.spawn(send_dmx_2(dmx2, dmx3_dir, 10).unwrap());
+    spawner.spawn(send_dmx_3(dmx3, dmx4_dir, 13).unwrap());
     
     // ========================================================================
     // Web Server Setup
