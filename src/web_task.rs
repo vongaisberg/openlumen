@@ -9,8 +9,8 @@ use crate::log::{get_logs, serve_logs};
 use crate::schema::{
     self, ArtnetConfig, ArtnetConfigUpdate, ArtnetConfigUpdateItem, DmxOutputUpdate, DmxPortConfig,
     DmxPortConfigUpdate, DmxPortOutput, IpConfigType, NetworkConfig, NetworkConfigUpdate,
-    NetworkConfigUpdateItem, OutputRate, SourceDevice, StateUpdate, StateUpdateData, SystemInfo,
-    TypedMessage,
+    NetworkConfigUpdateItem, OutputRate, SourceDevice, StateUpdate, StateUpdateData, SystemAction,
+    SystemActionUpdate, SystemInfo, TypedMessage,
 };
 use crate::storage::{self, file_system};
 use crate::system;
@@ -36,10 +36,10 @@ static mut BUFFER: [u8; 1024] = [0; 1024];
 pub static NETWORK_NODE_CONFIG: Mutex<ThreadModeRawMutex, NetworkConfig> =
     Mutex::new(NetworkConfig {
         ip_config_type: IpConfigType::Static,
-        ip_address: Some([192, 168, 0, 2]),
-        subnet_mask: Some([255, 255, 255, 0]),
-        gateway: Some([192, 168, 0, 1]),
-        mac_address: [0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF],
+        ip_address: None,
+        subnet_mask: None,
+        gateway: None,
+        mac_address: [0x00; 6],
         current_ip_address: None,
         current_subnet_mask: None,
         current_gateway: None,
@@ -273,6 +273,86 @@ impl ws::WebSocketCallback for WebsocketServer {
                                             .send_text("LOG: ArtNet config parse error - check field names")
                                             .await;
                                             warn!("Failed to parse ArtNet config update");
+                                        }
+                                    }
+                                }
+                                "systemAction" => {
+                                    match serde_json_core::from_str::<SystemActionUpdate>(text) {
+                                        Ok((update, _)) => {
+                                            let _ = tx
+                                                .send_text("LOG: System action received")
+                                                .await;
+                                            
+                                            match update.action {
+                                                SystemAction::RestartDevice => {
+                                                    let _ = tx
+                                                        .send_text("LOG: Restarting device...")
+                                                        .await;
+                                                    // Trigger reboot via file system task
+                                                    file_system::save_and_reboot();
+                                                }
+                                                SystemAction::ResetToDefaults => {
+                                                    let _ = tx
+                                                        .send_text("LOG: Resetting to defaults...")
+                                                        .await;
+                                                    
+                                                    // Reset DMX ports to defaults
+                                                    {
+                                                        let mut dmx_config = DMX_PORT_CONFIG.lock().await;
+                                                        *dmx_config = core::array::from_fn(
+                                                            schema::DmxPortConfig::default_with_universe
+                                                        );
+                                                    }
+                                                    
+                                                    // Reset ArtNet config to defaults
+                                                    {
+                                                        let mut artnet_config = ARTNET_NODE_CONFIG.lock().await;
+                                                        *artnet_config = ArtnetConfig::default();
+                                                    }
+                                                    
+                                                    // Note: Network config is preserved (not reset)
+                                                    
+                                                    // Save settings
+                                                    file_system::save_config();
+                                                    
+                                                    // Send updated state
+                                                    send_state_update::<R, W>(&mut tx).await;
+                                                }
+                                                SystemAction::FactoryReset => {
+                                                    let _ = tx
+                                                        .send_text("LOG: Factory reset - resetting all settings...")
+                                                        .await;
+                                                    
+                                                    // Reset DMX ports to defaults
+                                                    {
+                                                        let mut dmx_config = DMX_PORT_CONFIG.lock().await;
+                                                        *dmx_config = core::array::from_fn(
+                                                            schema::DmxPortConfig::default_with_universe
+                                                        );
+                                                    }
+                                                    
+                                                    // Reset ArtNet config to defaults
+                                                    {
+                                                        let mut artnet_config = ARTNET_NODE_CONFIG.lock().await;
+                                                        *artnet_config = ArtnetConfig::default();
+                                                    }
+                                                    
+                                                    // Reset Network config to defaults (factory reset includes network)
+                                                    {
+                                                        let mut network_config = NETWORK_NODE_CONFIG.lock().await;
+                                                        *network_config = NetworkConfig::default();
+                                                    }
+                                                    
+                                                    // Save settings and reboot
+                                                    file_system::save_and_reboot();
+                                                }
+                                            }
+                                        }
+                                        Err(_e) => {
+                                            let _ = tx
+                                                .send_text("LOG: System action parse error - check field names")
+                                                .await;
+                                            warn!("Failed to parse system action update");
                                         }
                                     }
                                 }

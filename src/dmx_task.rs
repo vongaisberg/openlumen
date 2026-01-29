@@ -22,6 +22,8 @@ use crate::schema::OutputRate;
 
 use {defmt_rtt as _, panic_probe as _};
 
+use crate::log;
+
 /// Global DMX buffer for 4 ports
 /// Each port has 513 bytes: 1 start code (0x00) + 512 channels
 pub static DMX_BUFFER: Mutex<ThreadModeRawMutex, [[u8; DMX_FRAME_SIZE]; 4]> =
@@ -85,7 +87,7 @@ macro_rules! define_dmx_task {
             mut dmx_output: DmxPio<'static, PIO0, $port>,
             mut dir_pin: Output<'static>,
         ) {
-            info!("DMX task {} started", $port);
+            log!("[DMX{}] Task started", $port).await;
 
             // Statistics tracking
             let mut frame_count: u32 = 0;
@@ -123,7 +125,6 @@ macro_rules! define_dmx_task {
                         if since_last < min_inter_frame {
                             Timer::after(min_inter_frame - since_last).await;
                         }
-                        debug!("Port {}: New ArtNet data", $port);
                     }
                     embassy_futures::select::Either::Second(_) => {
                         // Timer expired - periodic refresh

@@ -62,13 +62,14 @@ impl Default for NetworkConfig {
         mac_address[4] = ((chip_id >> 8) & 0xFF) as u8;
         mac_address[5] = (chip_id & 0xFF) as u8;
 
+        let ip_address = Some([10, mac_address[3], mac_address[4], mac_address[5]]);
 
         Self {
             id: None,
             ip_config_type: IpConfigType::Static,
-            ip_address: Some([192, 168, 0, 2]),
-            subnet_mask: Some([255, 255, 255, 0]),
-            gateway: Some([192, 168, 0, 1]),
+            ip_address: ip_address,
+            subnet_mask: Some([255, 0, 0, 0]),
+            gateway: Some([10, 0, 0, 1]),
             mac_address: mac_address,
             current_ip_address: None,
             current_subnet_mask: None,
@@ -293,4 +294,21 @@ pub struct SystemInfoUpdate {
 pub struct TypedMessage {
     #[serde(rename = "type")]
     pub type_: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SystemAction {
+    #[serde(rename = "restartDevice")]
+    RestartDevice,
+    #[serde(rename = "resetToDefaults")]
+    ResetToDefaults,
+    #[serde(rename = "factoryReset")]
+    FactoryReset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemActionUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub action: SystemAction,
 }

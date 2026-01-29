@@ -74,7 +74,7 @@ pub async fn file_system_task(
         let signal = SETTINGS_STORE_SIGNAL.wait().await;
         save_settings(&fs).await;
         if signal == SettingsStoreSignal::SaveAndReboot {
-            rom_data::reboot(0, 0, 0, 0);
+            rom_data::reboot(0, 10, 0, 0);
         }
     }
 }

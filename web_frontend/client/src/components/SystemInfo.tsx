@@ -58,7 +58,7 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
 
   const handleCheckUpdates = () => {
     setIsDirty(true);
-    onSave({ action: "checkUpdates" });
+    onSave({ type: "systemAction", action: "checkUpdates" });
   };
 
   const showConfirmDialog = (title: string, message: string, action: string) => {
@@ -68,7 +68,7 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
 
   const handleConfirm = () => {
     setIsDirty(true);
-    onSave({ action: dialogConfig.action });
+    onSave({ type: "systemAction", action: dialogConfig.action });
     setConfirmDialogOpen(false);
   };
 
