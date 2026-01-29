@@ -174,7 +174,7 @@ export default function DMXPortCard({ portNumber, port, dmxOutput, onChange }: D
                 HTP (Highest Takes Precedence)
               </SelectItem>
               <SelectItem value={MergeMode.Ltp}>LTP (Latest Takes Precedence)</SelectItem>
-              <SelectItem value={MergeMode.Priority}>Priority (Last Sender Wins)</SelectItem>
+              <SelectItem value={MergeMode.Priority}>Priority (Lowest Physical Wins)</SelectItem>
             </SelectContent>
           </Select>
         </div>

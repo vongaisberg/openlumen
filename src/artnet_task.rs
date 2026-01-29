@@ -242,7 +242,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                 if n >= 18 {
                                     // Parse ArtDmx packet
                                     let sequence = recv_buf[12];
-                                    let _physical = recv_buf[13];
+                                    let physical = recv_buf[13];
                                     let universe = u16::from_le_bytes([recv_buf[14], recv_buf[15]]);
                                     let length =
                                         u16::from_be_bytes([recv_buf[16], recv_buf[17]]) as usize;
@@ -338,6 +338,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     }
                                     source.last_packet_sequence = sequence;
                                     source.last_packet_time = now;
+                                    source.last_packet_physical = physical;
 
                                     // Copy DMX data to source buffer
                                     source.last_packet_dmx[0] = 0; // Start code
@@ -511,7 +512,7 @@ fn merge_dmx_data(
             }
             MergeMode::Priority => {
                 let priority_source =
-                    if sources[0].last_packet_sequence < sources[1].last_packet_sequence {
+                    if sources[0].last_packet_physical < sources[1].last_packet_physical {
                         &sources[0]
                     } else {
                         &sources[1]
