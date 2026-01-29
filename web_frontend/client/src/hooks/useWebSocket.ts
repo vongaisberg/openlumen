@@ -5,12 +5,14 @@ export default function useWebSocket() {
   const [connected, setConnected] = useState(false);
   const [data, setData] = useState<any>(null);
   const [dmxOutputs, setDmxOutputs] = useState<DmxPortOutput[]>([]);
-  const [systemStatus, setSystemStatus] = useState("Running");
-  const [lastUpdated, setLastUpdated] = useState("Just now");
+  const [systemStatus, setSystemStatus] = useState("");
+  const [lastUpdated, setLastUpdated] = useState("");
   
   const socket = useRef<WebSocket | null>(null);
   const reconnectTimeout = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
+  const lastUpdateTime = useRef<number | null>(null);
+  const updateInterval = useRef<number | null>(null);
   const MAX_RECONNECT_DELAY = 30000; // 30 seconds
   const INITIAL_RECONNECT_DELAY = 500; // 500ms
 
@@ -21,6 +23,46 @@ export default function useWebSocket() {
     );
     reconnectAttempt.current += 1;
     return delay;
+  }, []);
+
+  // Format relative time (e.g., "2 seconds ago", "1 minute ago")
+  const formatRelativeTime = useCallback((timestamp: number): string => {
+    const now = Date.now();
+    const diffMs = now - timestamp;
+    const diffSeconds = Math.floor(diffMs / 1000);
+    setConnected(false);
+    if (diffSeconds < 1) {
+    setConnected(true);
+      return "Just now";
+    } else if (diffSeconds < 60) {
+      return `${diffSeconds} seconds ago`;
+    } else if (diffSeconds < 3600) {
+      const minutes = Math.floor(diffSeconds / 60);
+      return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+    } else {
+      const hours = Math.floor(diffSeconds / 3600);
+      return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+    }
+  }, []);
+
+  // Update the lastUpdated display periodically
+  const startUpdateInterval = useCallback(() => {
+    if (updateInterval.current) {
+      clearInterval(updateInterval.current);
+    }
+    
+    updateInterval.current = window.setInterval(() => {
+      if (lastUpdateTime.current !== null) {
+        setLastUpdated(formatRelativeTime(lastUpdateTime.current));
+      }
+    }, 1000); // Update every second
+  }, [formatRelativeTime]);
+
+  const stopUpdateInterval = useCallback(() => {
+    if (updateInterval.current) {
+      clearInterval(updateInterval.current);
+      updateInterval.current = null;
+    }
   }, []);
 
   const connect = useCallback(() => {
@@ -62,23 +104,30 @@ export default function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        console.log("Received WebSocket message:", message);
         
         if (message.type === "stateUpdate") {
-          console.log("Received stateUpdate message");
           setData(message.data);
-          setLastUpdated("Just now");
+          
+          // Extract systemStatus from systemInfo if available
+          if (message.data?.systemInfo?.systemStatus) {
+            setSystemStatus(message.data.systemInfo.systemStatus);
+          }
+          
+          // Update timestamp and relative time display
+          lastUpdateTime.current = Date.now();
+          setLastUpdated(formatRelativeTime(lastUpdateTime.current));
+          startUpdateInterval();
         } else if (message.type === "statusUpdate") {
+          // Legacy support for separate statusUpdate messages
           setSystemStatus(message.status);
         } else if (message.type === "dmxOutputUpdate") {
-          console.log("Received dmxOutputUpdate message");
           setDmxOutputs(message.data);
         }
       } catch (error) {
         console.error("Error parsing WebSocket message:", error);
       }
     };
-  }, [getReconnectDelay]);
+  }, [getReconnectDelay, formatRelativeTime, startUpdateInterval]);
 
   // Initialize WebSocket connection
   useEffect(() => {
@@ -86,6 +135,7 @@ export default function useWebSocket() {
 
     // Clean up function
     return () => {
+      stopUpdateInterval();
       if (reconnectTimeout.current) {
         window.clearTimeout(reconnectTimeout.current);
       }
@@ -93,7 +143,7 @@ export default function useWebSocket() {
         socket.current.close();
       }
     };
-  }, [connect]);
+  }, [connect, stopUpdateInterval]);
 
   // Function to send messages over WebSocket
   const sendMessage = useCallback((message: any) => {
