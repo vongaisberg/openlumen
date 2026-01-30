@@ -4,13 +4,13 @@
 //! and real-time DMX data monitoring.
 
 use crate::artnet_task::{ARTNET_NODE_CONFIG, ARTNET_SOURCES, ARTNET_STATS};
-use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG};
+use crate::dmx_task::{DMX_BUFFER, DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED};
 use crate::log::{get_logs, serve_logs};
 use crate::schema::{
-    self, ArtnetConfig, ArtnetConfigUpdate, ArtnetConfigUpdateItem, DmxOutputUpdate, DmxPortConfig,
-    DmxPortConfigUpdate, DmxPortOutput, IpConfigType, NetworkConfig, NetworkConfigUpdate,
-    NetworkConfigUpdateItem, OutputRate, SourceDevice, StateUpdate, StateUpdateData, SystemAction,
-    SystemActionUpdate, SystemInfo, TypedMessage,
+    self, ArtnetConfig, ArtnetConfigUpdate, DmxOutputUpdate, DmxPortConfig,
+    DmxPortConfigUpdate, DmxPortOutput, DeleteFailsafeUpdate, IpConfigType, NetworkConfig,
+    NetworkConfigUpdate, SetFailsafeUpdate, SourceDevice, StateUpdate, StateUpdateData,
+    SystemAction, SystemActionUpdate, SystemInfo, TypedMessage,
 };
 use crate::storage::{self, file_system};
 use crate::system;
@@ -276,6 +276,48 @@ impl ws::WebSocketCallback for WebsocketServer {
                                         }
                                     }
                                 }
+                                "setFailsafe" => {
+                                    if let Ok((update, _)) =
+                                        serde_json_core::from_str::<SetFailsafeUpdate>(text)
+                                    {
+                                        let port_index = update.data.port_number as usize;
+                                        if port_index < 4 {
+                                            let copy = {
+                                                let dmx_buffer = DMX_BUFFER.lock().await;
+                                                if let Some(port_buf) = dmx_buffer.get(port_index) {
+                                                    let mut c = [0u8; 512];
+                                                    c.copy_from_slice(&port_buf[1..513]);
+                                                    Some(c)
+                                                } else {
+                                                    None
+                                                }
+                                            };
+                                            if let Some(c) = copy {
+                                                let mut data = FAILSAFE_DATA.lock().await;
+                                                data[port_index].copy_from_slice(&c);
+                                                let mut stored = FAILSAFE_STORED.lock().await;
+                                                stored[port_index] = true;
+                                                info!("Failsafe scene stored for port {}", port_index);
+                                                file_system::save_config();
+                                            }
+                                        }
+                                    }
+                                }
+                                "deleteFailsafe" => {
+                                    if let Ok((update, _)) =
+                                        serde_json_core::from_str::<DeleteFailsafeUpdate>(text)
+                                    {
+                                        let port_index = update.data.port_number as usize;
+                                        if port_index < 4 {
+                                            let mut stored = FAILSAFE_STORED.lock().await;
+                                            stored[port_index] = false;
+                                            let mut data = FAILSAFE_DATA.lock().await;
+                                            data[port_index].fill(0);
+                                            info!("Failsafe deleted for port {}", port_index);
+                                            file_system::save_config();
+                                        }
+                                    }
+                                }
                                 "systemAction" => {
                                     match serde_json_core::from_str::<SystemActionUpdate>(text) {
                                         Ok((update, _)) => {
@@ -310,6 +352,14 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                         *artnet_config = ArtnetConfig::default();
                                                     }
                                                     
+                                                    // Clear failsafe
+                                                    {
+                                                        let mut stored = FAILSAFE_STORED.lock().await;
+                                                        *stored = [false; 4];
+                                                        let mut data = FAILSAFE_DATA.lock().await;
+                                                        *data = [[0u8; 512]; 4];
+                                                    }
+                                                    
                                                     // Note: Network config is preserved (not reset)
                                                     
                                                     // Save settings
@@ -341,6 +391,14 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                     {
                                                         let mut network_config = NETWORK_NODE_CONFIG.lock().await;
                                                         *network_config = NetworkConfig::default();
+                                                    }
+                                                    
+                                                    // Clear failsafe
+                                                    {
+                                                        let mut stored = FAILSAFE_STORED.lock().await;
+                                                        *stored = [false; 4];
+                                                        let mut data = FAILSAFE_DATA.lock().await;
+                                                        *data = [[0u8; 512]; 4];
                                                     }
                                                     
                                                     // Save settings and reboot
@@ -435,6 +493,7 @@ async fn send_state_update<
     let artnet_sources = ARTNET_SOURCES.lock().await;
 
     let mut dmx_ports_with_sources: Vec<DmxPortConfig, 4> = dmx_ports.clone();
+    let failsafe_stored = FAILSAFE_STORED.lock().await;
     for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
         // Safe bounds check for artnet_sources array access
         if let Some(sources) = artnet_sources.get(i) {
@@ -445,9 +504,11 @@ async fn send_state_update<
                     name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
                     ip: source.ip,
                     packets_per_second: Some(source.frequency),
+                    physical: source.last_packet_physical,
                 })
                 .collect();
         }
+        port.has_failsafe = failsafe_stored[i];
     }
 
     let status = StateUpdate {

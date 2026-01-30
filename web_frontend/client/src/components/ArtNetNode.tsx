@@ -6,9 +6,19 @@ import ArtNetSettings from "./ArtNetSettings";
 import DmxPorts from "./DmxPorts";
 import SystemInfo from "./SystemInfo";
 import ConnectionStatus from "./ConnectionStatus";
-import StatusBar from "./StatusBar";
 import useWebSocket from "@/hooks/useWebSocket";
+import { useTheme } from "@/contexts/ThemeContext";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Moon, Sun, LayoutDashboard, Wifi, Radio, Cpu } from "lucide-react";
 import type { DmxPortOutput } from "@shared/types";
+
+function getPacketLossClass(loss: number) {
+  if (loss === 0) return "text-success";
+  if (loss <= 2) return "text-warning";
+  return "text-destructive";
+}
 
 interface TabComponentProps {
   data: any;
@@ -17,123 +27,151 @@ interface TabComponentProps {
 }
 
 const tabs = [
-  { 
-    id: "dmx", 
-    label: "DMX Ports", 
-    component: DmxPorts as React.ComponentType<TabComponentProps> 
-  },
-  { 
-    id: "network", 
-    label: "Network Settings", 
-    component: NetworkSettings as React.ComponentType<TabComponentProps> 
-  },
-  { 
-    id: "artnet", 
-    label: "ArtNet Configuration", 
-    component: ArtNetSettings as React.ComponentType<TabComponentProps> 
-  },
-  { 
-    id: "system", 
-    label: "System", 
-    component: SystemInfo as React.ComponentType<TabComponentProps> 
-  },
+  { id: "dmx", label: "DMX Ports", icon: LayoutDashboard, component: DmxPorts as React.ComponentType<TabComponentProps> },
+  { id: "network", label: "Network", icon: Wifi, component: NetworkSettings as React.ComponentType<TabComponentProps> },
+  { id: "artnet", label: "ArtNet", icon: Radio, component: ArtNetSettings as React.ComponentType<TabComponentProps> },
+  { id: "system", label: "System", icon: Cpu, component: SystemInfo as React.ComponentType<TabComponentProps> },
 ];
 
 export default function ArtNetNode() {
   const [activeTab, setActiveTab] = useState<string>("dmx");
   const { toast } = useToast();
-  
-  const { 
-    connected, 
-    data, 
+  const { theme, toggleTheme } = useTheme();
+
+  const {
+    connected,
+    data,
     dmxOutputs,
     sendMessage,
     lastUpdated,
-    systemStatus
+    systemStatus,
   } = useWebSocket();
-  
-  const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component || tabs[0].component;
+
+  const ActiveComponent = tabs.find((tab) => tab.id === activeTab)?.component ?? tabs[0].component;
 
   const handleSendMessage = (payload: any) => {
-    // Ensure the payload has a type field
     if (!payload.type) {
       toast({
         title: "Error",
         description: "Invalid message format: missing type field",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
-
     sendMessage(payload);
     toast({
       title: "Success",
-      description: `Settings saved successfully.`,
+      description: "Settings saved successfully.",
     });
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-background">
       {/* Header */}
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-800">OpenLumen Node</h1>
-          <ConnectionStatus connected={connected} />
+      <header className="sticky top-0 z-10 border-b border-border bg-card shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <h1 className="text-xl font-semibold tracking-tight text-foreground shrink-0">
+              OpenLumen Node
+            </h1>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:gap-x-6 text-xs text-muted-foreground min-w-0">
+              <span>
+                Status: <span className="font-medium text-foreground">{systemStatus}</span>
+              </span>
+              <span>
+                Updated: <span className="font-medium text-foreground">{lastUpdated}</span>
+              </span>
+              <span className="font-mono">
+                ArtNet: <span className="font-medium text-foreground">{data?.systemInfo?.artnetTraffic ?? 0}</span> pkt/s
+              </span>
+              <span className="font-mono">
+                Loss: <span className={`font-medium ${getPacketLossClass(data?.systemInfo?.packetLoss ?? 0)}`}>{data?.systemInfo?.packetLoss ?? 0}%</span>
+              </span>
+              <div className="inline-flex items-center gap-1.5 pl-4 border-l border-border shrink-0">
+                <ConnectionStatus connected={connected} />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={toggleTheme}
+                  aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                >
+                  {theme === "dark" ? (
+                    <Sun className="h-4 w-4 text-foreground" />
+                  ) : (
+                    <Moon className="h-4 w-4 text-foreground" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-grow bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {!connected && (
-            <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 flex items-center">
-              <AlertCircle className="h-5 w-5 text-red-400 mr-2" />
-              <p className="text-sm text-red-700">
-                Disconnected from server. Attempting to reconnect...
-              </p>
-            </div>
-          )}
+      {/* Main: sidebar + content */}
+      <main className="flex flex-1">
+        {/* Sidebar */}
+        <aside className="w-52 shrink-0 border-r border-border bg-muted/30 hidden sm:block">
+          <nav className="p-2 space-y-0.5">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`
+                    w-full flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors
+                    ${activeTab === tab.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }
+                  `}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
 
-          <div className="bg-white rounded-lg shadow">
-            <div className="border-b border-gray-200">
-              <nav className="flex -mb-px">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
-                    className={`
-                      py-4 px-6 text-sm font-medium border-b-2
-                      ${activeTab === tab.id
-                        ? 'border-blue-500 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                      }
-                    `}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </nav>
+        {/* Content */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
+            {!connected && (
+              <Alert variant="destructive" className="mb-6">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Disconnected</AlertTitle>
+                <AlertDescription>
+                  Connection to the node lost. Reconnecting automatically…
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Mobile tabs */}
+            <div className="sm:hidden mb-4">
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList className="grid w-full grid-cols-4">
+                  {tabs.map((tab) => (
+                    <TabsTrigger key={tab.id} value={tab.id} className="text-xs">
+                      {tab.label}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
             </div>
 
-            <div className="p-6">
-              <ActiveComponent 
-                data={data} 
-                dmxOutputs={dmxOutputs}
-                onSave={handleSendMessage} 
-              />
+            <div className="rounded-lg border border-border bg-card shadow-sm overflow-hidden">
+              <div className="p-6">
+                <ActiveComponent
+                  data={data}
+                  dmxOutputs={dmxOutputs}
+                  onSave={handleSendMessage}
+                />
+              </div>
             </div>
           </div>
         </div>
       </main>
-
-      {/* Status Bar */}
-      <StatusBar 
-        systemStatus={systemStatus}
-        lastUpdated={lastUpdated}
-        artnetTraffic={data?.systemInfo?.artnetTraffic || 0}
-        packetLoss={data?.systemInfo?.packetLoss || 0}
-        memoryUsage={data?.systemInfo?.memoryUsage || 0}
-      />
     </div>
   );
 }

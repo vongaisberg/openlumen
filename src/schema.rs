@@ -137,6 +137,8 @@ pub struct SourceDevice {
     pub ip: [u8; 4],
     #[serde(rename = "packets_per_second")]
     pub packets_per_second: Option<u32>,
+    /// Physical input port number (0 or 1). Used with MergeMode::Priority: lower value = primary.
+    pub physical: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +151,9 @@ pub struct DmxPortConfig {
     pub output_rate: OutputRate,
     #[serde(rename = "sourceDevices")]
     pub source_devices: Vec<SourceDevice, 2>,
+    /// Whether a failsafe scene is stored for this port (read-only, set at runtime from failsafe store).
+    #[serde(rename = "hasFailsafe", default)]
+    pub has_failsafe: bool,
 }
 
 impl DmxPortConfig {
@@ -159,6 +164,7 @@ impl DmxPortConfig {
             merge_mode: MergeMode::default(),
             output_rate: OutputRate::default(),
             source_devices: Vec::new(),
+            has_failsafe: false,
         }
     }
 }
@@ -288,6 +294,34 @@ pub struct SystemInfoUpdate {
     #[serde(rename = "type")]
     pub type_: &'static str,
     pub data: SystemInfo,
+}
+
+/// Payload for setFailsafe WebSocket command. port_number is 0-based port index (0-3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetFailsafeData {
+    #[serde(rename = "portNumber")]
+    pub port_number: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetFailsafeUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: SetFailsafeData,
+}
+
+/// Payload for deleteFailsafe WebSocket command. port_number is 0-based port index (0-3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFailsafeData {
+    #[serde(rename = "portNumber")]
+    pub port_number: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFailsafeUpdate {
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+    pub data: DeleteFailsafeData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

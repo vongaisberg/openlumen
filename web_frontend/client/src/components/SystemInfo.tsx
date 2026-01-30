@@ -74,68 +74,67 @@ export default function SystemInfo({ data, onSave }: SystemInfoProps) {
 
   return (
     <>
-      <Card>
+      <Card className="border-border bg-card">
         <CardContent className="pt-6">
-          <h2 className="text-lg font-medium text-gray-800 mb-6">System Information</h2>
-          
+          <h2 className="text-lg font-medium text-foreground mb-6">System Information</h2>
+
           <div className="space-y-6">
-            {/* System Info */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <div>
-                <h3 className="text-sm font-medium text-gray-700">Firmware Version</h3>
-                <p className="mt-1 text-sm text-gray-900">{formatVersion(systemData.firmwareVersion)}</p>
+                <h3 className="text-sm font-medium text-muted-foreground">Firmware Version</h3>
+                <p className="mt-1 text-sm font-mono text-foreground">{formatVersion(systemData.firmwareVersion)}</p>
               </div>
               <div>
-                <h3 className="text-sm font-medium text-gray-700">Hardware Version</h3>
-                <p className="mt-1 text-sm text-gray-900">{formatVersion(systemData.hardwareVersion)}</p>
+                <h3 className="text-sm font-medium text-muted-foreground">Hardware Version</h3>
+                <p className="mt-1 text-sm font-mono text-foreground">{formatVersion(systemData.hardwareVersion)}</p>
               </div>
               <div>
-                <h3 className="text-sm font-medium text-gray-700">Uptime</h3>
-                <p className="mt-1 text-sm text-gray-900">{formatUptime(systemData.uptime)}</p>
+                <h3 className="text-sm font-medium text-muted-foreground">Uptime</h3>
+                <p className="mt-1 text-sm text-foreground">{formatUptime(systemData.uptime)}</p>
               </div>
               <div>
-                <h3 className="text-sm font-medium text-gray-700">CPU Temperature</h3>
-                <p className="mt-1 text-sm text-gray-900">{systemData.temperature}°C</p>
+                <h3 className="text-sm font-medium text-muted-foreground">CPU Temperature</h3>
+                <p className="mt-1 text-sm font-mono text-foreground">{systemData.temperature}°C</p>
               </div>
             </div>
-            
-            
-            
-            {/* System Actions */}
-            <div className="pt-6 border-t border-gray-200">
-              <h3 className="text-base font-medium text-gray-800 mb-4">System Actions</h3>
-              
+
+            <div className="pt-6 border-t border-border">
+              <h3 className="text-base font-medium text-foreground mb-4">System Actions</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <Button 
+                <Button
                   variant="outline"
-                  onClick={() => showConfirmDialog(
-                    "Restart Device", 
-                    "Are you sure you want to restart the device? All current DMX output will be interrupted.", 
-                    "restartDevice"
-                  )}
+                  onClick={() =>
+                    showConfirmDialog(
+                      "Restart Device",
+                      "Are you sure you want to restart the device? All current DMX output will be interrupted.",
+                      "restartDevice"
+                    )
+                  }
                 >
                   Restart Device
                 </Button>
-                
-                <Button 
+                <Button
                   variant="outline"
-                  onClick={() => showConfirmDialog(
-                    "Reset to Defaults", 
-                    "Are you sure you want to reset all settings to defaults? This will not affect network settings.", 
-                    "resetToDefaults"
-                  )}
+                  onClick={() =>
+                    showConfirmDialog(
+                      "Reset to Defaults",
+                      "Are you sure you want to reset all settings to defaults? This will not affect network settings.",
+                      "resetToDefaults"
+                    )
+                  }
                 >
                   Reset to Defaults
                 </Button>
-                
-                <Button 
-                  variant="outline" 
-                  className="text-red-700 border-red-300 hover:bg-red-50"
-                  onClick={() => showConfirmDialog(
-                    "Factory Reset", 
-                    "WARNING: This will reset ALL settings including network configuration to factory defaults. The device will restart and may have a different IP address. Are you sure?", 
-                    "factoryReset"
-                  )}
+                <Button
+                  variant="outline"
+                  className="text-destructive border-destructive/50 hover:bg-destructive/10"
+                  onClick={() =>
+                    showConfirmDialog(
+                      "Factory Reset",
+                      "WARNING: This will reset ALL settings including network configuration to factory defaults. The device will restart and may have a different IP address. Are you sure?",
+                      "factoryReset"
+                    )
+                  }
                 >
                   Factory Reset
                 </Button>

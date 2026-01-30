@@ -153,38 +153,35 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
   };
 
   return (
-    <Card>
+    <Card className="border-border bg-card">
       <CardContent className="pt-6">
-        <h2 className="text-lg font-medium text-gray-800 mb-6">Network Configuration</h2>
-        
+        <h2 className="text-lg font-medium text-foreground mb-6">Network Configuration</h2>
+
         <form onSubmit={onSubmit} className="space-y-6">
-          {/* IP Configuration Type */}
           <div className="space-y-1">
-            <Label className="block text-sm font-medium text-gray-700">IP Configuration</Label>
-            <RadioGroup 
+            <Label className="text-sm font-medium text-foreground">IP Configuration</Label>
+            <RadioGroup
               value={formData.ipConfigType}
               onValueChange={handleRadioChange}
               className="flex items-center space-x-4 mt-2"
             >
               <div className="flex items-center">
                 <RadioGroupItem value="dhcp" id="dhcp" />
-                <Label htmlFor="dhcp" className="ml-2 text-sm text-gray-700">DHCP</Label>
+                <Label htmlFor="dhcp" className="ml-2 text-sm text-foreground">DHCP</Label>
               </div>
               <div className="flex items-center">
                 <RadioGroupItem value="static" id="static" />
-                <Label htmlFor="static" className="ml-2 text-sm text-gray-700">Static IP</Label>
+                <Label htmlFor="static" className="ml-2 text-sm text-foreground">Static IP</Label>
               </div>
             </RadioGroup>
           </div>
-          
-          {/* IP Settings section - shown for both DHCP and static */}
+
           <div className="space-y-4">
-            {/* IP Address */}
             <div>
-              <Label htmlFor="ipAddress" className="flex items-center text-sm font-medium text-gray-700">
+              <Label htmlFor="ipAddress" className="flex items-center text-sm font-medium text-foreground">
                 {isStatic ? "IP Address" : "Fallback IP Address"}
                 {!isStatic && (
-                  <span className="ml-2 text-xs text-gray-500">(Used when DHCP server is unavailable)</span>
+                  <span className="ml-2 text-xs text-muted-foreground">(Used when DHCP server is unavailable)</span>
                 )}
               </Label>
               <Input
@@ -193,19 +190,17 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
                 value={rawValues.ipAddress}
                 onChange={handleChange}
                 placeholder="192.168.1.100"
-                className={`mt-1 ${errors.ipAddress ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
+                className={`mt-1 ${errors.ipAddress ? "border-destructive focus-visible:ring-destructive" : ""}`}
               />
               {errors.ipAddress && (
-                <p className="mt-1 text-sm text-red-600">{errors.ipAddress}</p>
+                <p className="mt-1 text-sm text-destructive">{errors.ipAddress}</p>
               )}
             </div>
-            
-            {/* Subnet Mask */}
             <div>
-              <Label htmlFor="subnetMask" className="flex items-center text-sm font-medium text-gray-700">
+              <Label htmlFor="subnetMask" className="flex items-center text-sm font-medium text-foreground">
                 {isStatic ? "Subnet Mask" : "Fallback Subnet Mask"}
                 {!isStatic && (
-                  <span className="ml-2 text-xs text-gray-500">(Used when DHCP server is unavailable)</span>
+                  <span className="ml-2 text-xs text-muted-foreground">(Used when DHCP server is unavailable)</span>
                 )}
               </Label>
               <Input
@@ -214,60 +209,54 @@ export default function NetworkSettings({ data, onSave }: NetworkSettingsProps) 
                 value={rawValues.subnetMask}
                 onChange={handleChange}
                 placeholder="255.255.255.0"
-                className={`mt-1 ${errors.subnetMask ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
+                className={`mt-1 ${errors.subnetMask ? "border-destructive focus-visible:ring-destructive" : ""}`}
               />
               {errors.subnetMask && (
-                <p className="mt-1 text-sm text-red-600">{errors.subnetMask}</p>
+                <p className="mt-1 text-sm text-destructive">{errors.subnetMask}</p>
               )}
             </div>
-            
-            {/* Gateway - only shown for static IP */}
             {isStatic && (
               <div>
-                <Label htmlFor="gateway" className="block text-sm font-medium text-gray-700">Gateway</Label>
+                <Label htmlFor="gateway" className="text-sm font-medium text-foreground">Gateway</Label>
                 <Input
                   id="gateway"
                   name="gateway"
                   value={rawValues.gateway}
                   onChange={handleChange}
                   placeholder="192.168.1.1"
-                  className={`mt-1 ${errors.gateway ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}`}
+                  className={`mt-1 ${errors.gateway ? "border-destructive focus-visible:ring-destructive" : ""}`}
                 />
                 {errors.gateway && (
-                  <p className="mt-1 text-sm text-red-600">{errors.gateway}</p>
+                  <p className="mt-1 text-sm text-destructive">{errors.gateway}</p>
                 )}
               </div>
             )}
           </div>
-          
-          {/* Current Network Info */}
-          <div className="pt-4 border-t border-gray-200">
-            <h3 className="text-sm font-medium text-gray-700 mb-3">Current Network Information</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+
+          <div className="pt-4 border-t border-border">
+            <h3 className="text-sm font-medium text-foreground mb-3">Current Network Information</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm font-mono">
               <div>
-                <span className="text-gray-500">IP Address:</span>
-                <span className="ml-2 text-gray-900">{ipArrayToString(data?.networkConfig?.currentIpAddress) || "192.168.1.120"}</span>
+                <span className="text-muted-foreground">IP:</span>
+                <span className="ml-2 text-foreground">{ipArrayToString(data?.networkConfig?.currentIpAddress) || "—"}</span>
               </div>
               <div>
-                <span className="text-gray-500">Subnet Mask:</span>
-                <span className="ml-2 text-gray-900">{ipArrayToString(data?.networkConfig?.currentSubnetMask) || "255.255.255.0"}</span>
+                <span className="text-muted-foreground">Subnet:</span>
+                <span className="ml-2 text-foreground">{ipArrayToString(data?.networkConfig?.currentSubnetMask) || "—"}</span>
               </div>
               <div>
-                <span className="text-gray-500">Gateway:</span>
-                <span className="ml-2 text-gray-900">{ipArrayToString(data?.networkConfig?.currentGateway) || "192.168.1.1"}</span>
+                <span className="text-muted-foreground">Gateway:</span>
+                <span className="ml-2 text-foreground">{ipArrayToString(data?.networkConfig?.currentGateway) || "—"}</span>
               </div>
               <div>
-                <span className="text-gray-500">MAC Address:</span>
-                <span className="ml-2 text-gray-900">{macAddressToString(data?.networkConfig?.macAddress) || "—"}</span>
+                <span className="text-muted-foreground">MAC:</span>
+                <span className="ml-2 text-foreground">{macAddressToString(data?.networkConfig?.macAddress) || "—"}</span>
               </div>
             </div>
           </div>
-          
-          {/* Submit Button */}
+
           <div className="flex justify-end">
-            <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
-              Save Network Settings
-            </Button>
+            <Button type="submit">Save Network Settings</Button>
           </div>
         </form>
       </CardContent>

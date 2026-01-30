@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import DMXPortCard from "./DMXPortCard";
 import { DmxPortConfig, DmxPortConfigUpdateItem, PortMode, MergeMode, OutputRate, DmxPortOutput } from "@shared/types";
@@ -91,31 +90,32 @@ export default function DmxPorts({ data, dmxOutputs, onSave }: DmxPortsProps) {
     });
   };
 
+  const handleSetFailsafe = (portIndex: number) => {
+    onSave({ type: "setFailsafe", data: { portNumber: portIndex } });
+  };
+
+  const handleDeleteFailsafe = (portIndex: number) => {
+    onSave({ type: "deleteFailsafe", data: { portNumber: portIndex } });
+  };
+
   return (
-    <Card>
-      <CardContent className="pt-6">
-        <h2 className="text-lg font-medium text-gray-800 mb-6">DMX Ports Configuration</h2>
-        
-        <div className="space-y-6">
-          {/* Port Cards */}
-          {ports.map((port, index) => (
-            <DMXPortCard 
-              key={index} 
-              portNumber={index}
-              port={port} 
-              dmxOutput={dmxOutputs.find(output => output.portNumber === index)}
-              onChange={(index, field, value) => handlePortChange(index, field, value)} 
-            />
-          ))}
-          
-          {/* Save Button */}
-          <div className="flex justify-end">
-            <Button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700">
-              Save Port Settings
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-6">
+      <div className="space-y-4">
+        {ports.map((port, index) => (
+          <DMXPortCard
+            key={index}
+            portNumber={index}
+            port={port}
+            dmxOutput={dmxOutputs.find((output) => output.portNumber === index)}
+            onChange={(idx, field, value) => handlePortChange(idx, field, value)}
+            onSetFailsafe={handleSetFailsafe}
+            onDeleteFailsafe={handleDeleteFailsafe}
+          />
+        ))}
+      </div>
+      <div className="flex justify-end">
+        <Button onClick={handleSave}>Save Port Settings</Button>
+      </div>
+    </div>
   );
 }

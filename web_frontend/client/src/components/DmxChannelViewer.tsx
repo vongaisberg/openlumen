@@ -107,14 +107,13 @@ export default function DmxChannelViewer({
         
         <div className="flex-1 overflow-auto mt-4">
           <div className="min-w-max">
-            <canvas 
-              ref={canvasRef} 
-              className="border border-gray-200 rounded" 
+            <canvas
+              ref={canvasRef}
+              className="border border-border rounded-md bg-muted/30"
             />
           </div>
         </div>
-        
-        <div className="mt-4 text-xs text-gray-500">
+        <div className="mt-4 text-xs text-muted-foreground">
           Each box represents a DMX channel (1-512). The fill level represents the value (0-255).
         </div>
       </DialogContent>

@@ -17,6 +17,11 @@
       "type": "integer",
       "minimum": 0,
       "description": "Number of packets received per second from this source"
+    },
+    "physical": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Physical input port (0 or 1). With MergeMode.Priority, the source with the lower value is primary."
     }
   }
 } 

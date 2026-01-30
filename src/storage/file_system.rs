@@ -11,7 +11,7 @@ use littlefs2_core::Path;
 
 use crate::{
     artnet_task::ARTNET_NODE_CONFIG,
-    dmx_task::DMX_PORT_CONFIG,
+    dmx_task::{DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED},
     schema::{StoredSettings, SETTINGS_VERSION},
     storage::flash_storage_adapter::FlashStorage,
     try_log,
@@ -28,6 +28,10 @@ pub enum SettingsStoreSignal {
 
 pub static SETTINGS_STORE_SIGNAL: Signal<ThreadModeRawMutex, SettingsStoreSignal> = Signal::new();
 const SETTINGS_PATH: &Path = path!("settings.json");
+const FAILSAFE_PATH: &Path = path!("failsafe.bin");
+
+/// Size of failsafe.bin: 4 bytes stored flags + 4 ports * 512 channels.
+const FAILSAFE_FILE_SIZE: usize = 4 + 4 * 512;
 
 #[embassy_executor::task]
 pub async fn file_system_task(
@@ -77,6 +81,82 @@ pub async fn file_system_task(
             rom_data::reboot(0, 10, 0, 0);
         }
     }
+}
+
+/// Load failsafe data from flash into FAILSAFE_STORED and FAILSAFE_DATA.
+/// If file is missing or too short, leaves runtime cleared (all false, zeros).
+pub async fn load_failsafe(fs: &Filesystem<'_, FlashStorage<'_>>) {
+    let mut buf = [0u8; FAILSAFE_FILE_SIZE];
+    let read_len = match fs.open_file_with_options_and_then(
+        |options| options.read(true).write(false).create(false),
+        FAILSAFE_PATH,
+        |file| {
+            let len = file.len().unwrap_or(0);
+            if len < FAILSAFE_FILE_SIZE {
+                return Ok(0);
+            }
+            match file.read(&mut buf) {
+                Ok(n) if n >= FAILSAFE_FILE_SIZE => Ok(FAILSAFE_FILE_SIZE),
+                _ => Ok(0),
+            }
+        },
+    ) {
+        Ok(n) => n,
+        Err(_) => 0,
+    };
+
+    if read_len < FAILSAFE_FILE_SIZE {
+        // No valid failsafe file: ensure runtime is cleared
+        if let (Ok(mut stored), Ok(mut data)) =
+            (FAILSAFE_STORED.try_lock(), FAILSAFE_DATA.try_lock())
+        {
+            *stored = [false; 4];
+            *data = [[0u8; 512]; 4];
+        }
+        return;
+    }
+
+    if let (Ok(mut stored), Ok(mut data)) =
+        (FAILSAFE_STORED.try_lock(), FAILSAFE_DATA.try_lock())
+    {
+        for i in 0..4 {
+            stored[i] = buf[i] != 0;
+        }
+        for port in 0..4 {
+            let start = 4 + port * 512;
+            data[port].copy_from_slice(&buf[start..start + 512]);
+        }
+    }
+}
+
+/// Save FAILSAFE_STORED and FAILSAFE_DATA to flash.
+/// Uses .lock().await (not try_lock) so we wait for any holder (e.g. send_state_update)
+/// and reliably persist the current state (e.g. after Reset to Defaults clears it).
+pub async fn save_failsafe(fs: &Filesystem<'_, FlashStorage<'_>>) {
+    let mut buf = [0u8; FAILSAFE_FILE_SIZE];
+    let stored = FAILSAFE_STORED.lock().await;
+    let data = FAILSAFE_DATA.lock().await;
+    for i in 0..4 {
+        buf[i] = if stored[i] { 1 } else { 0 };
+    }
+    for port in 0..4 {
+        let start = 4 + port * 512;
+        buf[start..start + 512].copy_from_slice(&data[port]);
+    }
+    let _ = fs.remove(FAILSAFE_PATH);
+    let _ = fs.open_file_with_options_and_then(
+        |options| options.read(false).write(true).create(true).truncate(true),
+        FAILSAFE_PATH,
+        |file| {
+            match file.write(&buf) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    try_log!("[FLASH] Failed to write failsafe file: {:?}", e);
+                    Err(e)
+                }
+            }
+        },
+    );
 }
 
 /// Result of loading settings from flash
@@ -185,7 +265,7 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     // Step 2: If we need to reset/create settings, do so now
     match load_result {
         LoadResult::Success => {
-            // Settings loaded successfully, nothing more to do
+            load_failsafe(fs).await;
         }
         LoadResult::CreatedDefaults | LoadResult::VersionMismatch | LoadResult::ParseError | LoadResult::IoError => {
             try_log!("[FLASH] Creating default settings file");
@@ -222,6 +302,15 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
 
             if let Err(e) = write_result {
                 try_log!("[FLASH] Failed to create settings file: {:?}", e);
+            }
+
+            // Clear failsafe: remove file and clear runtime statics
+            let _ = fs.remove(FAILSAFE_PATH);
+            if let (Ok(mut stored), Ok(mut data)) =
+                (FAILSAFE_STORED.try_lock(), FAILSAFE_DATA.try_lock())
+            {
+                *stored = [false; 4];
+                *data = [[0u8; 512]; 4];
             }
 
             // Runtime configs already have defaults from their static initializers,
@@ -302,6 +391,8 @@ async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
             try_log!("[FLASH] Failed to open settings file for writing: {:?}", e);
         }
     }
+
+    save_failsafe(fs).await;
 }
 
 pub fn save_config() {

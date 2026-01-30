@@ -6,7 +6,7 @@
 use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
-use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG};
+use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED};
 use crate::log;
 use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode};
 use defmt::*;
@@ -370,6 +370,18 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                         }
                                     }
 
+                                    // When no source is active, output failsafe scene if stored
+                                    if !port_has_any_active(port_sources) {
+                                        let stored = FAILSAFE_STORED.lock().await;
+                                        let data = FAILSAFE_DATA.lock().await;
+                                        if stored[port_index] {
+                                            let mut buffer = DMX_BUFFER.lock().await;
+                                            if let Some(port_buffer) = buffer.get_mut(port_index) {
+                                                port_buffer[1..513].copy_from_slice(&data[port_index]);
+                                            }
+                                        }
+                                    }
+
                                     // Notify DMX task of new data
                                     notify_port(port_index);
                                 }
@@ -457,6 +469,18 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                             );
                         }
                     }
+
+                    // When no source is active for this port, output failsafe scene if stored
+                    if !port_has_any_active(port) {
+                        let stored = FAILSAFE_STORED.lock().await;
+                        let data = FAILSAFE_DATA.lock().await;
+                        if stored[port_index] {
+                            let mut buffer = DMX_BUFFER.lock().await;
+                            if let Some(port_buffer) = buffer.get_mut(port_index) {
+                                port_buffer[1..513].copy_from_slice(&data[port_index]);
+                            }
+                        }
+                    }
                 }
 
                 let drop_rate = if total_packet_count > 0 {
@@ -477,6 +501,11 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
             }
         }
     }
+}
+
+/// Returns true if any source for this port is active.
+fn port_has_any_active(sources: &[ArtnetSource; MAX_SOURCES_PER_PORT]) -> bool {
+    sources.iter().any(|s| s.active)
 }
 
 /// Merge DMX data from multiple sources according to merge mode

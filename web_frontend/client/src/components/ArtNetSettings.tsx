@@ -95,15 +95,14 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
   };
 
   return (
-    <Card>
+    <Card className="border-border bg-card">
       <CardContent className="pt-6">
-        <h2 className="text-lg font-medium text-gray-800 mb-6">ArtNet Configuration</h2>
-        
+        <h2 className="text-lg font-medium text-foreground mb-6">ArtNet Configuration</h2>
+
         <form onSubmit={onSubmit} className="space-y-6">
-            {/* Net and Subnet */}
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
-              <Label className="block text-sm font-medium text-gray-700">Net</Label>
+              <Label className="text-sm font-medium text-foreground">Net</Label>
               <Select 
                 value={formData.net}
                 onValueChange={(value) => handleSelectChange("net", value)}
@@ -122,7 +121,7 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
             </div>
               
             <div>
-              <Label className="block text-sm font-medium text-gray-700">Subnet</Label>
+              <Label className="text-sm font-medium text-foreground">Subnet</Label>
               <Select 
                 value={formData.subnet}
                 onValueChange={(value) => handleSelectChange("subnet", value)}
@@ -142,30 +141,26 @@ export default function ArtNetSettings({ data, onSave }: ArtNetSettingsProps) {
             </div>
             
             
-            {/* Device Name */}
           <div>
-            <Label htmlFor="deviceName" className="block text-sm font-medium text-gray-700">Device Name</Label>
+            <Label htmlFor="deviceName" className="text-sm font-medium text-foreground">Device Name</Label>
             <Input
               id="deviceName"
               name="deviceName"
               value={formData.deviceName}
               onChange={handleChange}
-                      placeholder="OpenLumen Node"
-                      maxLength={17}
-              className={errors.deviceName ? 'border-red-300 focus:ring-red-500 focus:border-red-500' : ''}
-                    />
-                  <p className="mt-1 text-xs text-gray-500">Name will appear on network discovery (max 17 characters)</p>
+              placeholder="OpenLumen Node"
+              maxLength={17}
+              className={errors.deviceName ? "border-destructive focus-visible:ring-destructive" : ""}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">Name will appear on network discovery (max 17 characters)</p>
             {errors.deviceName && (
-              <p className="mt-1 text-sm text-red-600">{errors.deviceName}</p>
-              )}
+              <p className="mt-1 text-sm text-destructive">{errors.deviceName}</p>
+            )}
           </div>
-            
-            {/* Submit Button */}
-            <div className="flex justify-end">
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
-                Save ArtNet Settings
-              </Button>
-            </div>
+
+          <div className="flex justify-end">
+            <Button type="submit">Save ArtNet Settings</Button>
+          </div>
           </form>
       </CardContent>
     </Card>

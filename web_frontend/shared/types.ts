@@ -43,6 +43,8 @@ export interface SourceDevice {
   name: string;
   ip: number[];
   packets_per_second?: number;
+  /** Physical input port (0 or 1). With MergeMode.Priority, lower value = primary source. */
+  physical?: number;
 }
 
 // DMX Port Configuration (full config with read-only fields)
@@ -52,6 +54,7 @@ export interface DmxPortConfig {
   mergeMode: MergeMode;
   outputRate: OutputRate;
   sourceDevices: SourceDevice[]; // Read-only - reported by backend
+  hasFailsafe?: boolean; // Read-only - whether a failsafe scene is stored for this port
 }
 
 // DMX Port Configuration Update Item (editable fields only)
@@ -67,6 +70,18 @@ export interface DmxPortConfig {
 export interface DmxPortOutput {
   portNumber: number;
   dmxData: number[];  // Array of 512 values (0-255)
+}
+
+// SetFailsafe: store current output as failsafe scene for the given port (portNumber 0-3)
+export interface SetFailsafeUpdate {
+  type: 'setFailsafe';
+  data: { portNumber: number };
+}
+
+// DeleteFailsafe: remove stored failsafe scene for the given port (portNumber 0-3)
+export interface DeleteFailsafeUpdate {
+  type: 'deleteFailsafe';
+  data: { portNumber: number };
 }
 
 export enum PortMode {

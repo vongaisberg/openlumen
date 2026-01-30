@@ -52,6 +52,10 @@
       },
       "description": "Array of source devices sending to this port"
     },
+    "hasFailsafe": {
+      "type": "boolean",
+      "description": "Whether a failsafe scene is stored for this port (read-only)"
+    },
     "channelValues": {
       "type": "array",
       "items": {

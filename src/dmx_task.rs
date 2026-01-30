@@ -70,11 +70,20 @@ pub const DEFAULT_DMX_PORT_CONFIG: DmxPortConfig = DmxPortConfig {
     merge_mode: crate::schema::MergeMode::Htp,
     output_rate: OutputRate::Hz44,
     source_devices: Vec::new(),
+    has_failsafe: false,
 };
 
 /// Port configuration storage
 pub static DMX_PORT_CONFIG: Mutex<ThreadModeRawMutex, [DmxPortConfig; 4]> =
     Mutex::new([DEFAULT_DMX_PORT_CONFIG; 4]);
+
+/// Per-port failsafe: whether a failsafe scene is stored (one bool per port).
+pub static FAILSAFE_STORED: Mutex<ThreadModeRawMutex, [bool; 4]> =
+    Mutex::new([false; 4]);
+
+/// Per-port failsafe scene data (512 channels each). Only valid where FAILSAFE_STORED[i] is true.
+pub static FAILSAFE_DATA: Mutex<ThreadModeRawMutex, [[u8; 512]; 4]> =
+    Mutex::new([[0u8; 512]; 4]);
 
 /// Convert OutputRate to Duration
 #[allow(dead_code)]
