@@ -5,7 +5,7 @@
 
 use crate::artnet::poll_reply::PollReply;
 use crate::artnet::poll_reply::*;
-use crate::artnet::{OPCODE_DMX, OPCODE_POLL};
+use crate::artnet::{OPCODE_DMX, OPCODE_POLL, OPCODE_POLL_REPLY};
 use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED};
 use crate::log;
 use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode};
@@ -403,6 +403,37 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                 if let Err(e) = socket.send_to(&reply_buf[..len], ep.endpoint).await
                                 {
                                     error!("Failed to send ArtPollReply: {:?}", e);
+                                }
+                            }
+
+                            OPCODE_POLL_REPLY => {
+                                // Art-Net PollReply from a controller: long_name at bytes 44..108
+                                const POLL_REPLY_LONG_NAME_OFFSET: usize = 44;
+                                const POLL_REPLY_LONG_NAME_LEN: usize = 64;
+                                const POLL_REPLY_MIN_LEN: usize =
+                                    POLL_REPLY_LONG_NAME_OFFSET + POLL_REPLY_LONG_NAME_LEN;
+                                if n < POLL_REPLY_MIN_LEN {
+                                    continue;
+                                }
+                                let long_name = &recv_buf[POLL_REPLY_LONG_NAME_OFFSET
+                                    ..POLL_REPLY_LONG_NAME_OFFSET + POLL_REPLY_LONG_NAME_LEN];
+                                let mut name = [0u8; 17];
+                                let copy_len = long_name
+                                    .iter()
+                                    .position(|&b| b == 0)
+                                    .unwrap_or(17)
+                                    .min(17);
+                                if copy_len > 0 {
+                                    name[..copy_len].copy_from_slice(&long_name[..copy_len]);
+
+                                    let mut sources = ARTNET_SOURCES.lock().await;
+                                    for port_sources in sources.iter_mut() {
+                                        for source in port_sources.iter_mut() {
+                                            if source.active && source.ip == sender_ip {
+                                                source.name = name;
+                                            }
+                                        }
+                                    }
                                 }
                             }
 

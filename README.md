@@ -190,7 +190,7 @@ OpenLumen Node runs on the **Raspberry Pi Pico 2** (RP2350) with W5500 Ethernet.
 - **W5500 Ethernet module** — e.g., [WIZnet Pico2-W5500](https://www.wiznet.io/product-item/wiznet-pico-2-w5500/)
 - **DMX carrier board** — 4× DMX512 outputs with RS-485 transceivers
 
-The carrier board design uses standard 3-pin XLR connectors with isolated RS-485 transceivers. [Hardware Files](https://github.com/klnspdr/pico2-artnet-node).
+The carrier board design uses standard 3-pin XLR connectors with isolated RS-485 transceivers. [Example Hardware](https://github.com/klnspdr/pico2-artnet-node).
 
 <br clear="right"/>
 
