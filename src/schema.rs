@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 // This file contains the schemas for configuration and information transmitted to and from the frontend
 
-pub const SETTINGS_VERSION: u8 = 1;
+pub const SETTINGS_VERSION: u8 = 2;
 
 /// Consolidated settings structure stored in flash
 #[derive(Debug, Clone, Serialize, Deserialize)]

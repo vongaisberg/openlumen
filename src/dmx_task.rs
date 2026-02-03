@@ -129,7 +129,7 @@ macro_rules! define_dmx_task {
 
             let mut frame_count: u32 = 0;
             let mut last_stats_time = Instant::now();
-            let default_interval = Duration::from_millis(1_000);
+            let default_interval = Duration::from_millis(100);
             let min_inter_frame = Duration::from_millis(1);
             let mut last_frame_time = Instant::now();
 
