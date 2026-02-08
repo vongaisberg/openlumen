@@ -206,6 +206,8 @@ pub enum PortMode {
     Inactive,
     #[serde(rename = "Blackout")]
     Blackout,
+    #[serde(rename = "Input")]
+    Input,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Copy)]

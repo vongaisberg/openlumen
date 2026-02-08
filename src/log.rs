@@ -118,7 +118,7 @@ pub async fn get_logs() -> String<3000> {
     let buffer = LOG_RING.lock().await;
     let mut logs = String::new();
     for entry in buffer.iter() {
-        let _ = core::write!(&mut logs, "{:>10}", entry.time.as_micros());
+        let _ = core::write!(&mut logs, "{:>13}", entry.time.as_micros());
         let _ = core::write!(&mut logs, " ");
         let _ = logs.push_str(entry.message.as_str());
         let _ = logs.push_str("\n");

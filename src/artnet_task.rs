@@ -8,7 +8,7 @@ use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL, OPCODE_POLL_REPLY};
 use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED};
 use crate::log;
-use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode};
+use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode, PortMode};
 use defmt::*;
 use embassy_futures::yield_now;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -97,11 +97,31 @@ async fn sync_artnet_config(node_config: &mut PollReply) {
     }
     drop(config);
 
-    // Sync universe settings from DMX_PORT_CONFIG to sw_out
+    // Sync universe settings and port types from DMX_PORT_CONFIG
     let dmx_config = DMX_PORT_CONFIG.lock().await;
     for (i, port_config) in dmx_config.iter().enumerate() {
         if i < node_config.sw_out.len() {
-            node_config.sw_out[i] = port_config.universe;
+            if port_config.mode == PortMode::Input {
+                // Port is configured as DMX input
+                node_config.port_types[i] = PortTypes::Input | PortTypes::DMX512;
+                node_config.good_input[i] = GoodInput::DataReceived;
+                node_config.good_output[i] = GoodOutputA::empty();
+                node_config.sw_in[i] = port_config.universe;
+                node_config.sw_out[i] = 0;
+            } else {
+                // Port is configured as DMX output (Active/Blackout/Inactive)
+                node_config.port_types[i] = PortTypes::Output | PortTypes::DMX512;
+                node_config.good_input[i] = GoodInput::InputDisabled;
+                node_config.good_output[i] = if port_config.mode == PortMode::Active
+                    || port_config.mode == PortMode::Blackout
+                {
+                    GoodOutputA::DataTransmitting
+                } else {
+                    GoodOutputA::empty()
+                };
+                node_config.sw_in[i] = 0;
+                node_config.sw_out[i] = port_config.universe;
+            }
         }
     }
 }
@@ -184,7 +204,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
             GoodOutputB::empty(),
             GoodOutputB::empty(),
         ],
-        status3: Status3::empty(),
+        status3: Status3::PortSwitching,
         uid: [0; 6],
         user_data: [0; 2],
         refresh_rate: 44,

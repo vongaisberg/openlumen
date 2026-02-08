@@ -16,7 +16,7 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["on", "off", "blackout"],
+      "enum": ["on", "off", "blackout", "input"],
       "default": "on",
       "description": "Port operation mode"
     },

@@ -74,4 +74,47 @@ impl ArtDmx {
     pub fn universe(&self) -> u16 {
         ((self.net as u16) << 8) | (self.sub_uni as u16)
     }
+
+    /// Serialize an ArtDmx packet into a buffer.
+    ///
+    /// Returns the number of bytes written, or an error if the buffer is too small.
+    /// Packet layout:
+    ///   [0..8]   "Art-Net\0" header
+    ///   [8..10]  OpCode 0x5000 (little-endian)
+    ///   [10..12] Protocol version 0x000E (big-endian)
+    ///   [12]     Sequence
+    ///   [13]     Physical
+    ///   [14]     SubUni (low byte of port-address)
+    ///   [15]     Net (high byte of port-address)
+    ///   [16..18] Length (big-endian)
+    ///   [18..]   DMX data
+    pub fn to_buffer(&self, buf: &mut [u8]) -> Result<usize, ArtNetError> {
+        let length = self.length as usize;
+        let total = 18 + length;
+        if buf.len() < total {
+            return Err(ArtNetError::BufferTooSmall);
+        }
+        if length > 512 {
+            return Err(ArtNetError::DmxLengthTooLarge);
+        }
+
+        // Art-Net header
+        buf[0..8].copy_from_slice(b"Art-Net\0");
+        // OpCode (little-endian)
+        buf[8..10].copy_from_slice(&ART_DMX_OPCODE.to_le_bytes());
+        // Protocol version (big-endian)
+        buf[10..12].copy_from_slice(&0x000Eu16.to_be_bytes());
+        // Sequence, Physical
+        buf[12] = self.sequence;
+        buf[13] = self.physical;
+        // Universe: SubUni (low), Net (high)
+        buf[14] = self.sub_uni;
+        buf[15] = self.net;
+        // Length (big-endian)
+        buf[16..18].copy_from_slice(&self.length.to_be_bytes());
+        // DMX data
+        buf[18..18 + length].copy_from_slice(&self.data[..length]);
+
+        Ok(total)
+    }
 }

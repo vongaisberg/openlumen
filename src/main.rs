@@ -5,6 +5,7 @@
 mod artnet;
 mod artnet_task;
 mod dmx_pio;
+mod dmx_rx_pio;
 mod dmx_task;
 mod log;
 mod schema;
@@ -18,6 +19,7 @@ use crate::web_task::NETWORK_NODE_CONFIG;
 use artnet_task::artnet_task;
 use defmt::*;
 use dmx_pio::create_dmx_outputs;
+use dmx_rx_pio::create_dmx_inputs;
 use dmx_task::{send_dmx_0, send_dmx_1, send_dmx_2, send_dmx_3};
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
@@ -25,7 +27,7 @@ use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Flex, Input, Level, Output, Pull};
-use embassy_rp::peripherals::PIO0;
+use embassy_rp::peripherals::{PIO0, PIO1};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_time::{Delay, Duration, Timer};
@@ -41,6 +43,9 @@ use {defmt_rtt as _, panic_probe as _};
 // Bind interrupts for PIO
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
+});
+bind_interrupts!(struct Irqs1 {
+    PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
 /// Convert subnet mask to prefix length
@@ -274,7 +279,8 @@ async fn main(spawner: Spawner) {
     let seed = rng.next_u64();
 
     // Match embassy examples
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    // 7 sockets: 1 ArtNet + 2 web server + up to 4 DMX input (ArtDMX TX)
+    static RESOURCES: StaticCell<StackResources<7>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         device,
         net_config,
@@ -322,6 +328,7 @@ async fn main(spawner: Spawner) {
     // DMX PIO Setup
     // ========================================================================
 
+    // PIO0: DMX TX (4 state machines, one per port)
     let Pio {
         mut common,
         sm0,
@@ -342,9 +349,32 @@ async fn main(spawner: Spawner) {
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
     );
-    log!("[MAIN] PIO DMX outputs initialized (4 independent SMs)").await;
+    log!("[MAIN] PIO0 DMX TX outputs initialized (4 independent SMs)").await;
 
-    // Individual DIR pins for each DMX output (RS485 TX enable) - Flex so we can set floating when Inactive
+    // PIO1: DMX RX (4 state machines, one per port)
+    let Pio {
+        common: mut common1,
+        sm0: sm0_rx,
+        sm1: sm1_rx,
+        sm2: sm2_rx,
+        sm3: sm3_rx,
+        ..
+    } = Pio::new(p.PIO1, Irqs1);
+
+    let (dmx0_rx, dmx1_rx, dmx2_rx, dmx3_rx) = create_dmx_inputs(
+        &mut common1,
+        sm0_rx,
+        sm1_rx,
+        sm2_rx,
+        sm3_rx,
+        p.PIN_6,  // DMX1 RX
+        p.PIN_9,  // DMX2 RX
+        p.PIN_12, // DMX3 RX
+        p.PIN_15, // DMX4 RX
+    );
+    log!("[MAIN] PIO1 DMX RX inputs initialized (4 independent SMs)").await;
+
+    // Individual DIR pins for each DMX port (RS485 direction) - Flex so we can set floating when Inactive
     let mut dmx1_dir = Flex::new(p.PIN_5);
     dmx1_dir.set_low();
     dmx1_dir.set_as_output();
@@ -365,11 +395,11 @@ async fn main(spawner: Spawner) {
     spawner.spawn(artnet_task(stack_ref, network_config.mac_address.clone()).unwrap());
 
     // Spawn 4 independent DMX tasks - each port runs at its own rate
-    // Data pin indices: 4, 7, 10, 13 (PIN_4, PIN_7, PIN_10, PIN_13)
-    spawner.spawn(send_dmx_0(dmx0, dmx1_dir, 4).unwrap());
-    spawner.spawn(send_dmx_1(dmx1, dmx2_dir, 7).unwrap());
-    spawner.spawn(send_dmx_2(dmx2, dmx3_dir, 10).unwrap());
-    spawner.spawn(send_dmx_3(dmx3, dmx4_dir, 13).unwrap());
+    // Each task gets: TX PIO (PIO0), RX PIO (PIO1), DIR pin, TX data pin index, network stack
+    spawner.spawn(send_dmx_0(dmx0, dmx0_rx, dmx1_dir, 4, stack_ref).unwrap());
+    spawner.spawn(send_dmx_1(dmx1, dmx1_rx, dmx2_dir, 7, stack_ref).unwrap());
+    spawner.spawn(send_dmx_2(dmx2, dmx2_rx, dmx3_dir, 10, stack_ref).unwrap());
+    spawner.spawn(send_dmx_3(dmx3, dmx3_rx, dmx4_dir, 13, stack_ref).unwrap());
     
     // ========================================================================
     // Web Server Setup

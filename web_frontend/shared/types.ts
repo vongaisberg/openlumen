@@ -87,7 +87,8 @@ export interface DeleteFailsafeUpdate {
 export enum PortMode {
   Active = "Active",
   Inactive = "Inactive",
-  Blackout = "Blackout"
+  Blackout = "Blackout",
+  Input = "Input"
 }
 
 export enum MergeMode {
