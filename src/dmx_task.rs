@@ -251,99 +251,125 @@ macro_rules! define_dmx_task {
                     let mut rx_frame_count: u32 = 0;
                     let mut rx_stats_time = Instant::now();
 
-                    // Inner RX loop
+                    // Double buffer: completed frame is copied here for deferred processing
+                    // so we can keep draining the FIFO into rx_frame for the next frame.
+                    let mut pending_frame = false;
+                    let mut pending_data = [0u8; DMX_FRAME_SIZE];
+                    let mut pending_pos: usize = 0;
+
+                    // Inner RX loop - structured to keep the FIFO drained at all times.
+                    //
+                    // Flow: try_read_word() in a tight loop (no .await between reads),
+                    // defer frame processing until the FIFO is empty, then block-wait
+                    // for the next word using select(read_word(), timeout).
                     loop {
-                        match embassy_futures::select::select(
-                            dmx_rx.read_word(),
-                            Timer::after(Duration::from_millis(250)),
-                        )
-                        .await
-                        {
-                            embassy_futures::select::Either::First(word) => {
-                                if word == BREAK_MARKER {
-                                    // Break detected - previous frame is complete
-                                    if frame_started && rx_pos > 1 && rx_frame[0] == 0x00 {
-                                        // Valid DMX frame (start code 0x00, at least 1 channel byte)
-                                        log!("[DMX{}] Valid DMX frame detected. Data: {:?}", $port, rx_frame).await;
+                        // Try non-blocking FIFO read (tight drain loop)
+                        let word = match dmx_rx.try_read_word() {
+                            Some(w) => w,
+                            None => {
+                                // FIFO is empty — safe to do expensive .await processing
 
+                                // Process completed frame if one is ready
+                                if pending_frame {
+                                    pending_frame = false;
+                                    let channel_count = pending_pos - 1; // Exclude start code
 
-                                        let channel_count = rx_pos - 1; // Exclude start code
+                                    // Build ArtDMX packet
+                                    let (net, subnet) = {
+                                        let cfg = ARTNET_NODE_CONFIG.lock().await;
+                                        (cfg.net, cfg.subnet)
+                                    };
+                                    let universe = {
+                                        let cfg = DMX_PORT_CONFIG.lock().await;
+                                        cfg[$port].universe
+                                    };
 
-                                        // Build ArtDMX packet
-                                        let (net, subnet) = {
-                                            let cfg = ARTNET_NODE_CONFIG.lock().await;
-                                            (cfg.net, cfg.subnet)
-                                        };
-                                        let universe = {
+                                    let mut artdmx = ArtDmx::default();
+                                    artdmx.sequence = sequence;
+                                    artdmx.physical = $port;
+                                    artdmx.sub_uni = (subnet << 4) | (universe & 0x0F);
+                                    artdmx.net = net;
+                                    artdmx.length = channel_count as u16;
+                                    artdmx.data[..channel_count]
+                                        .copy_from_slice(&pending_data[1..1 + channel_count]);
+
+                                    // Increment sequence (1-255, wrapping; 0 = disabled)
+                                    sequence = if sequence == 255 { 1 } else { sequence + 1 };
+
+                                    // Update shared DMX buffer so the web UI can display the data
+                                    {
+                                        let mut buffer = DMX_BUFFER.lock().await;
+                                        buffer[$port][..pending_pos]
+                                            .copy_from_slice(&pending_data[..pending_pos]);
+                                    }
+
+                                    // Send ArtDMX broadcast
+                                    if let Some(broadcast_ep) = get_broadcast_endpoint(stack) {
+                                        let mut pkt_buf = [0u8; 530];
+                                        if let Ok(len) = artdmx.to_buffer(&mut pkt_buf) {
+                                            let _ = socket
+                                                .send_to(&pkt_buf[..len], broadcast_ep)
+                                                .await;
+                                        }
+                                    }
+
+                                    rx_frame_count += 1;
+                                }
+
+                                // Per-second stats
+                                let now = Instant::now();
+                                if now.duration_since(rx_stats_time) >= Duration::from_secs(1) {
+                                    debug!(
+                                        "DMX port {} RX: {} frames/sec",
+                                        $port, rx_frame_count
+                                    );
+                                    rx_frame_count = 0;
+                                    rx_stats_time = now;
+                                }
+
+                                // Block-wait for the next FIFO word or a timeout
+                                match embassy_futures::select::select(
+                                    dmx_rx.read_word(),
+                                    Timer::after(Duration::from_millis(250)),
+                                )
+                                .await
+                                {
+                                    embassy_futures::select::Either::First(w) => w,
+                                    embassy_futures::select::Either::Second(_) => {
+                                        // Timeout — check if mode changed
+                                        let new_mode = {
                                             let cfg = DMX_PORT_CONFIG.lock().await;
-                                            cfg[$port].universe
+                                            cfg[$port].mode
                                         };
-
-                                        let mut artdmx = ArtDmx::default();
-                                        artdmx.sequence = sequence;
-                                        artdmx.physical = $port;
-                                        artdmx.sub_uni = (subnet << 4) | (universe & 0x0F);
-                                        artdmx.net = net;
-                                        artdmx.length = channel_count as u16;
-                                        artdmx.data[..channel_count]
-                                            .copy_from_slice(&rx_frame[1..1 + channel_count]);
-
-                                        // Increment sequence (1-255, wrapping; 0 = disabled)
-                                        sequence = if sequence == 255 { 1 } else { sequence + 1 };
-
-                                        // Update shared DMX buffer so the web UI can display the data
-                                        {
-                                            let mut buffer = DMX_BUFFER.lock().await;
-                                            buffer[$port][..rx_pos].copy_from_slice(&rx_frame[..rx_pos]);
+                                        if new_mode != PortMode::Input {
+                                            dmx_rx.set_sm_enable(false);
+                                            log!("[DMX{}] Leaving Input mode", $port).await;
+                                            break;
                                         }
-
-                                        // Send ArtDMX broadcast
-                                        if let Some(broadcast_ep) = get_broadcast_endpoint(stack) {
-                                            let mut pkt_buf = [0u8; 530];
-                                            if let Ok(len) = artdmx.to_buffer(&mut pkt_buf) {
-                                                let _ = socket
-                                                    .send_to(&pkt_buf[..len], broadcast_ep)
-                                                    .await;
-                                            }
-                                        }
-
-                                        rx_frame_count += 1;
-                                    }
-
-                                    // Reset for new frame
-                                    rx_pos = 0;
-                                    frame_started = true;
-                                } else {
-                                    // Data byte (upper 8 bits of 32-bit word)
-                                    if frame_started && rx_pos < DMX_FRAME_SIZE {
-                                        rx_frame[rx_pos] = (word >> 24) as u8;
-                                        rx_pos += 1;
+                                        continue;
                                     }
                                 }
                             }
-                            embassy_futures::select::Either::Second(_) => {
-                                // Timeout - check if mode changed
-                                let new_mode = {
-                                    let cfg = DMX_PORT_CONFIG.lock().await;
-                                    cfg[$port].mode
-                                };
-                                if new_mode != PortMode::Input {
-                                    dmx_rx.set_sm_enable(false);
-                                    log!("[DMX{}] Leaving Input mode", $port).await;
-                                    break;
-                                }
-                            }
-                        }
+                        };
 
-                        // Per-second stats
-                        let now = Instant::now();
-                        if now.duration_since(rx_stats_time) >= Duration::from_secs(1) {
-                            debug!(
-                                "DMX port {} RX: {} frames/sec",
-                                $port, rx_frame_count
-                            );
-                            rx_frame_count = 0;
-                            rx_stats_time = now;
+                        // Process word — single code path for both try_read and block-wait
+                        if word == BREAK_MARKER {
+                            // Break detected — previous frame is complete
+                            if frame_started && rx_pos > 1 && rx_frame[0] == 0x00 {
+                                // Valid DMX frame: copy to pending buffer for deferred processing
+                                pending_frame = true;
+                                pending_pos = rx_pos;
+                                pending_data[..rx_pos].copy_from_slice(&rx_frame[..rx_pos]);
+                            }
+                            // Reset for new frame
+                            rx_pos = 0;
+                            frame_started = true;
+                        } else {
+                            // Data byte (upper 8 bits of 32-bit word)
+                            if frame_started && rx_pos < DMX_FRAME_SIZE {
+                                rx_frame[rx_pos] = (word >> 24) as u8;
+                                rx_pos += 1;
+                            }
                         }
                     }
 
