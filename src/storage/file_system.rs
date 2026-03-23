@@ -12,7 +12,8 @@ use littlefs2_core::Path;
 use crate::{
     artnet_task::ARTNET_NODE_CONFIG,
     dmx_task::{DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED},
-    schema::{StoredSettings, SETTINGS_VERSION},
+    constants::SETTINGS_VERSION,
+    schema::StoredSettings,
     storage::flash_storage_adapter::FlashStorage,
     try_log,
     web_task::NETWORK_NODE_CONFIG,
@@ -76,7 +77,12 @@ pub async fn file_system_task(
     // Wait for settings store signal and save settings to filesystem
     loop {
         let signal = SETTINGS_STORE_SIGNAL.wait().await;
+        let t0 = embassy_time::Instant::now();
+        defmt::warn!("FLASH: save_settings START");
         save_settings(&fs).await;
+        let dur_us = t0.elapsed().as_micros();
+        defmt::warn!("FLASH: save_settings DONE in {}us", dur_us);
+        try_log!("[FLASH] save took {}us", dur_us);
         if signal == SettingsStoreSignal::SaveAndReboot {
             rom_data::reboot(0, 10, 0, 0);
         }

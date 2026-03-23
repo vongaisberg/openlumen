@@ -133,6 +133,11 @@ macro_rules! define_dmx_task {
             let min_inter_frame = Duration::from_millis(1);
             let mut last_frame_time = Instant::now();
 
+            // Timing instrumentation for stutter debugging
+            let mut max_send_frame_us: u64 = 0;
+            let mut max_signal_to_send_us: u64 = 0;
+            let mut max_buf_lock_us: u64 = 0;
+
             loop {
                 let elapsed = last_frame_time.elapsed();
                 let timeout = if elapsed >= default_interval {
@@ -140,6 +145,8 @@ macro_rules! define_dmx_task {
                 } else {
                     default_interval - elapsed
                 };
+
+                let wakeup_time = Instant::now();
 
                 match embassy_futures::select::select(
                     $signal.wait(),
@@ -178,9 +185,19 @@ macro_rules! define_dmx_task {
                 dir_pin.set_pad_isolation(false);
 
                 let dmx_data = {
+                    let t0 = Instant::now();
                     let buffer = DMX_BUFFER.lock().await;
+                    let wait_us = t0.elapsed().as_micros();
+                    if wait_us > max_buf_lock_us {
+                        max_buf_lock_us = wait_us;
+                    }
                     buffer[$port]
                 };
+
+                let signal_to_send_us = wakeup_time.elapsed().as_micros();
+                if signal_to_send_us > max_signal_to_send_us {
+                    max_signal_to_send_us = signal_to_send_us;
+                }
 
                 let frame_to_send: &[u8; DMX_FRAME_SIZE] = if mode == PortMode::Blackout {
                     &ZERO_FRAME
@@ -188,7 +205,12 @@ macro_rules! define_dmx_task {
                     &dmx_data
                 };
 
+                let send_start = Instant::now();
                 dmx_output.send_frame(frame_to_send).await;
+                let send_us = send_start.elapsed().as_micros();
+                if send_us > max_send_frame_us {
+                    max_send_frame_us = send_us;
+                }
 
                 Timer::after_micros(100).await;
                 dir_pin.set_low();
@@ -198,8 +220,20 @@ macro_rules! define_dmx_task {
 
                 let now = Instant::now();
                 if now.duration_since(last_stats_time) >= Duration::from_secs(1) {
-                    debug!("DMX port {}: {} frames/sec", $port, frame_count);
+                    debug!(
+                        "DMX{}: {} fps, send={}us sig2send={}us buf_lock={}us",
+                        $port, frame_count, max_send_frame_us,
+                        max_signal_to_send_us, max_buf_lock_us,
+                    );
+                    log!(
+                        "DX{}: {}fps s={}us s2s={}us bl={}us",
+                        $port, frame_count, max_send_frame_us,
+                        max_signal_to_send_us, max_buf_lock_us,
+                    ).await;
                     frame_count = 0;
+                    max_send_frame_us = 0;
+                    max_signal_to_send_us = 0;
+                    max_buf_lock_us = 0;
                     last_stats_time = now;
                 }
             }

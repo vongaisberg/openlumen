@@ -14,6 +14,7 @@ use crate::schema::{
 };
 use crate::storage::{self, file_system};
 use crate::system;
+use crate::constants;
 use defmt::*;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -62,14 +63,14 @@ pub async fn get_config() -> (
         Vec::from_slice(&dmx_ports).unwrap_or_default(),
         SystemInfo {
             id: None,
-            firmware_version: [1, 0, 0],
-            hardware_version: [2, 0, 0], // RP2350 hardware
+            firmware_version: constants::FIRMWARE_VERSION,
+            hardware_version: constants::HARDWARE_VERSION, // RP2350 hardware
             uptime: system::uptime_secs(),
             temperature: system::read_temperature_c(),
             artnet_traffic: stats.artdmx_count,
             packet_loss: stats.drop_rate,
-            system_status: String::try_from("Running").unwrap_or_default(),
-            device_id: String::try_from("RP2350-ARTNET").unwrap_or_default(),
+            system_status: String::try_from(constants::SYSTEM_STATUS).unwrap_or_default(),
+            device_id: String::try_from(constants::DEVICE_ID).unwrap_or_default(),
         },
     )
 }
@@ -490,25 +491,26 @@ async fn send_state_update<
 ) {
     let (network_config, artnet_config, dmx_ports, system_info) = get_config().await;
 
-    let artnet_sources = ARTNET_SOURCES.lock().await;
-
     let mut dmx_ports_with_sources: Vec<DmxPortConfig, 4> = dmx_ports.clone();
-    let failsafe_stored = FAILSAFE_STORED.lock().await;
-    for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
-        // Safe bounds check for artnet_sources array access
-        if let Some(sources) = artnet_sources.get(i) {
-            port.source_devices = sources
-                .iter()
-                .filter(|source| source.active)
-                .map(|source| SourceDevice {
-                    name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
-                    ip: source.ip,
-                    packets_per_second: Some(source.frequency),
-                    physical: source.last_packet_physical,
-                })
-                .collect();
+
+    {
+        let artnet_sources = ARTNET_SOURCES.lock().await;
+        let failsafe_stored = FAILSAFE_STORED.lock().await;
+        for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
+            if let Some(sources) = artnet_sources.get(i) {
+                port.source_devices = sources
+                    .iter()
+                    .filter(|source| source.active)
+                    .map(|source| SourceDevice {
+                        name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
+                        ip: source.ip,
+                        packets_per_second: Some(source.frequency),
+                        physical: source.last_packet_physical,
+                    })
+                    .collect();
+            }
+            port.has_failsafe = failsafe_stored[i];
         }
-        port.has_failsafe = failsafe_stored[i];
     }
 
     let status = StateUpdate {
@@ -540,7 +542,6 @@ async fn send_dmx_update<
     tx: &mut ws::SocketTx<W>,
     port: u8,
 ) {
-    // Validate port index
     let port_idx = port as usize;
     if port_idx >= NUM_DMX_PORTS {
         warn!("Invalid DMX port index: {}", port);
@@ -549,14 +550,14 @@ async fn send_dmx_update<
 
     let mut dmx_outputs = Vec::new();
 
-    let dmx_buffer = DMX_BUFFER.lock().await;
-
-    // Safe: we validated port_idx < NUM_DMX_PORTS above
-    if let Some(port_buffer) = dmx_buffer.get(port_idx) {
-        let _ = dmx_outputs.push(DmxPortOutput {
-            port_number: port,
-            dmx_data: Vec::from_slice(&port_buffer[1..513]).unwrap_or_default(),
-        });
+    {
+        let dmx_buffer = DMX_BUFFER.lock().await;
+        if let Some(port_buffer) = dmx_buffer.get(port_idx) {
+            let _ = dmx_outputs.push(DmxPortOutput {
+                port_number: port,
+                dmx_data: Vec::from_slice(&port_buffer[1..513]).unwrap_or_default(),
+            });
+        }
     }
 
     let update = DmxOutputUpdate {

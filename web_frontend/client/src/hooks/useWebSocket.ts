@@ -31,7 +31,7 @@ export default function useWebSocket() {
     const diffMs = now - timestamp;
     const diffSeconds = Math.floor(diffMs / 1000);
     setConnected(false);
-    if (diffSeconds < 1) {
+    if (diffSeconds < 5) {
     setConnected(true);
       return "Just now";
     } else if (diffSeconds < 60) {

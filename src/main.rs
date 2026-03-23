@@ -6,6 +6,7 @@ mod artnet;
 mod artnet_task;
 mod dmx_pio;
 mod dmx_task;
+mod constants;
 mod log;
 mod schema;
 mod storage;
@@ -273,8 +274,7 @@ async fn main(spawner: Spawner) {
     let mut rng = RoscRng;
     let seed = rng.next_u64();
 
-    // Match embassy examples
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         device,
         net_config,
@@ -397,15 +397,33 @@ async fn main(spawner: Spawner) {
 
 
     // ========================================================================
-    // Main Loop - heartbeat blink
+    // Main Loop - heartbeat blink + executor health monitor
     // ========================================================================
 
     info!("Entering main loop...");
+    let mut max_jitter_us: u64 = 0;
+    let mut health_tick: u32 = 0;
     loop {
-        // Long heartbeat - Blink every second
+        let t0 = embassy_time::Instant::now();
         led.set_high();
         Timer::after(Duration::from_millis(250)).await;
+        let actual_us = t0.elapsed().as_micros();
+        let jitter_us = actual_us.saturating_sub(250_000);
+        if jitter_us > max_jitter_us {
+            max_jitter_us = jitter_us;
+        }
+
         led.set_low();
         Timer::after(Duration::from_millis(750)).await;
+
+        health_tick += 1;
+        if health_tick >= 4 {
+            if max_jitter_us > 5_000 {
+                warn!("Executor jitter: max={}us over 4s", max_jitter_us);
+                log!("EXEC jitter: {}us over 4s", max_jitter_us).await;
+            }
+            max_jitter_us = 0;
+            health_tick = 0;
+        }
     }
 }

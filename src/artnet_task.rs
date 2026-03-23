@@ -8,6 +8,7 @@ use crate::artnet::poll_reply::*;
 use crate::artnet::{OPCODE_DMX, OPCODE_POLL, OPCODE_POLL_REPLY};
 use crate::dmx_task::{notify_port, DMX_BUFFER, DMX_PORT_CONFIG, FAILSAFE_DATA, FAILSAFE_STORED};
 use crate::log;
+use crate::constants;
 use crate::schema::{ArtnetConfig, DmxPortConfig, MergeMode};
 use defmt::*;
 use embassy_futures::yield_now;
@@ -110,10 +111,9 @@ async fn sync_artnet_config(node_config: &mut PollReply) {
 #[embassy_executor::task]
 pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
     log!("[ARTNET] ArtNet task starting").await;
-    // Use smaller buffers matching embassy examples
-    let mut rx_buffer = [0; 2048];
+    let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 1024];
-    let mut rx_meta = [PacketMetadata::EMPTY; 8];
+    let mut rx_meta = [PacketMetadata::EMPTY; 16];
     let mut tx_meta = [PacketMetadata::EMPTY; 8];
 
     let mut socket = UdpSocket::new(
@@ -144,13 +144,13 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
     let mut node_config = PollReply {
         ip_address: ip,
         port: 6454,
-        firmware_version: 0x0001,
+        firmware_version: constants::ARTNET_FIRMWARE_VERSION,
         net: 0,
         sub_net: 0,
-        oem_code: 0x2908,
+        oem_code: constants::ARTNET_OEM_CODE,
         ubea_version: 0,
         status1: Status1::IndicatorNormal,
-        esta_manufacturer: 0x0922,
+        esta_manufacturer: constants::ARTNET_ESTA_MANUFACTURER,
         port_name: [0; 18],
         long_name: [0u8; 64],
         node_report: [0; 64],
@@ -197,6 +197,17 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
     let mut last_stats_update = Instant::now();
     let mut recv_buf = [0u8; 700]; // DMX packet max ~640 bytes
 
+    // Timing instrumentation for stutter debugging
+    let mut last_recv_time = Instant::now();
+    let mut max_loop_us: u64 = 0;
+    let mut max_sources_lock_us: u64 = 0;
+    let mut max_config_lock_us: u64 = 0;
+    let mut max_buffer_lock_us: u64 = 0;
+    let mut max_select_wait_us: u64 = 0;
+    let mut max_stats_path_us: u64 = 0;
+    let mut stutter_count: u32 = 0;
+    const STUTTER_THRESHOLD_US: u64 = 50_000; // 50ms = likely stutter
+
     loop {
         // Yield to let other tasks run
         yield_now().await;
@@ -214,6 +225,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
         // Wait for either:
         // 1. Incoming ArtNet packet
         // 2. Stats timer expiry
+        let select_start = Instant::now();
         match embassy_futures::select::select(
             socket.recv_from(&mut recv_buf),
             Timer::after(timeout),
@@ -224,6 +236,24 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                 match result {
                     Ok((n, ep)) => {
                         let now = Instant::now();
+
+                        let wait_us = now.duration_since(select_start).as_micros();
+                        if wait_us > max_select_wait_us {
+                            max_select_wait_us = wait_us;
+                        }
+
+                        let loop_elapsed_us = now.duration_since(last_recv_time).as_micros();
+                        last_recv_time = now;
+                        if loop_elapsed_us > max_loop_us {
+                            max_loop_us = loop_elapsed_us;
+                        }
+                        if loop_elapsed_us > STUTTER_THRESHOLD_US {
+                            stutter_count += 1;
+                            warn!(
+                                "ARTNET stall: {}us between recvs (stutter #{})",
+                                loop_elapsed_us, stutter_count
+                            );
+                        }
 
                         // Extract sender IP address from endpoint
                         let sender_ip = match ep.endpoint.addr {
@@ -273,7 +303,12 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     };
 
                                     // Lock sources for this port
+                                    let t0 = Instant::now();
                                     let mut sources = ARTNET_SOURCES.lock().await;
+                                    let wait_us = t0.elapsed().as_micros();
+                                    if wait_us > max_sources_lock_us {
+                                        max_sources_lock_us = wait_us;
+                                    }
 
                                     // Defensive check for sources array bounds
                                     let port_sources = match sources.get_mut(port_index) {
@@ -349,7 +384,12 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     }
 
                                     // Get port config (safe: we validated port_index < NUM_DMX_PORTS above)
+                                    let t0 = Instant::now();
                                     let dmx_config = DMX_PORT_CONFIG.lock().await;
+                                    let wait_us = t0.elapsed().as_micros();
+                                    if wait_us > max_config_lock_us {
+                                        max_config_lock_us = wait_us;
+                                    }
                                     let port_config = match dmx_config.get(port_index) {
                                         Some(cfg) => cfg.clone(),
                                         None => continue,
@@ -358,7 +398,12 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
 
                                     // Lock main DMX buffer and merge (safe: validated port_index)
                                     {
+                                        let t0 = Instant::now();
                                         let mut buffer = DMX_BUFFER.lock().await;
+                                        let wait_us = t0.elapsed().as_micros();
+                                        if wait_us > max_buffer_lock_us {
+                                            max_buffer_lock_us = wait_us;
+                                        }
                                         if let Some(port_buffer) = buffer.get_mut(port_index) {
                                             port_buffer[0] = 0; // Start code
                                             merge_dmx_data(
@@ -388,7 +433,6 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                             }
 
                             OPCODE_POLL => {
-                                // Ensure config is up to date before replying
                                 sync_artnet_config(&mut node_config).await;
 
                                 let mut reply_buf = [0u8; 240];
@@ -400,9 +444,26 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     }
                                 };
 
-                                if let Err(e) = socket.send_to(&reply_buf[..len], ep.endpoint).await
+                                // Send ArtPollReply to broadcast per Art-Net spec.
+                                // Avoids unicast ARP resolution which can fail
+                                // when smoltcp's neighbor cache evicts the entry.
+                                let broadcast_ep = embassy_net::IpEndpoint::new(
+                                    embassy_net::IpAddress::Ipv4(
+                                        embassy_net::Ipv4Address::BROADCAST,
+                                    ),
+                                    6454,
+                                );
+
+                                let t0 = Instant::now();
+                                if let Err(e) = socket.send_to(&reply_buf[..len], broadcast_ep).await
                                 {
-                                    error!("Failed to send ArtPollReply: {:?}", e);
+                                    warn!("ArtPollReply send failed: {:?}", e);
+                                    log!("POLL send FAIL: {:?}", e).await;
+                                }
+                                let send_us = t0.elapsed().as_micros();
+                                if send_us > 1000 {
+                                    warn!("ArtPollReply send took {}us", send_us);
+                                    log!("POLL reply took {}us", send_us).await;
                                 }
                             }
 
@@ -449,6 +510,7 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
             }
             embassy_futures::select::Either::Second(_) => {
                 // Stats timer expired; update statistics and sync configuration
+                let stats_path_start = Instant::now();
                 let now = Instant::now();
 
                 // Proactively sync Art-Net config so changes take effect without waiting for ArtPoll
@@ -526,6 +588,45 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                     stats.dropped_packets = dropped_packets;
                     stats.drop_rate = drop_rate;
                 }
+
+                let stats_dur_us = stats_path_start.elapsed().as_micros();
+                if stats_dur_us > max_stats_path_us {
+                    max_stats_path_us = stats_dur_us;
+                }
+
+                if total_packet_count > 0 || stutter_count > 0 {
+                    info!(
+                        "ARTNET diag: pkts={} drop={} max_loop={}us wait={}us stats={}us mtx(src={} cfg={} buf={})us stutters={}",
+                        total_packet_count,
+                        dropped_packets,
+                        max_loop_us,
+                        max_select_wait_us,
+                        max_stats_path_us,
+                        max_sources_lock_us,
+                        max_config_lock_us,
+                        max_buffer_lock_us,
+                        stutter_count,
+                    );
+                    log!(
+                        "AN: p={} d={} lp={}us w={}us sp={}us mt={}|{}|{} st={}",
+                        total_packet_count,
+                        dropped_packets,
+                        max_loop_us,
+                        max_select_wait_us,
+                        max_stats_path_us,
+                        max_sources_lock_us,
+                        max_config_lock_us,
+                        max_buffer_lock_us,
+                        stutter_count,
+                    ).await;
+                }
+
+                max_loop_us = 0;
+                max_select_wait_us = 0;
+                max_stats_path_us = 0;
+                max_sources_lock_us = 0;
+                max_config_lock_us = 0;
+                max_buffer_lock_us = 0;
 
                 last_stats_update = now;
                 dropped_packets = 0;
