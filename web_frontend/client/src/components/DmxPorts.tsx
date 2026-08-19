@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
 import DMXPortCard from "./DMXPortCard";
 import { DmxPortConfig, DmxPortConfigUpdateItem, PortMode, MergeMode, OutputRate, DmxPortOutput } from "@shared/types";
 
@@ -113,8 +112,8 @@ export default function DmxPorts({ data, dmxOutputs, onSave }: DmxPortsProps) {
           />
         ))}
       </div>
-      <div className="flex justify-end">
-        <Button onClick={handleSave}>Save Port Settings</Button>
+      <div className="flex justify-end text-xs text-muted-foreground">
+        Changes save automatically
       </div>
     </div>
   );

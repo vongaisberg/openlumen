@@ -4,9 +4,12 @@
 
 mod artnet;
 mod artnet_task;
+mod button_task;
 mod dmx_pio;
 mod dmx_rx_pio;
 mod dmx_task;
+mod led_pio;
+mod led_task;
 mod log;
 mod schema;
 mod storage;
@@ -17,6 +20,7 @@ use crate::storage::file_system;
 use crate::storage::flash_storage_adapter::FlashStorage;
 use crate::web_task::NETWORK_NODE_CONFIG;
 use artnet_task::artnet_task;
+use button_task::network_reset_button_task;
 use defmt::*;
 use dmx_pio::create_dmx_outputs;
 use dmx_rx_pio::create_dmx_inputs;
@@ -27,8 +31,10 @@ use embassy_net::{Ipv4Address, Ipv4Cidr, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Flex, Input, Level, Output, Pull};
-use embassy_rp::peripherals::{PIO0, PIO1};
+use embassy_rp::peripherals::{PIO0, PIO1, PIO2};
 use embassy_rp::pio::{InterruptHandler, Pio};
+use led_pio::{create_led_outputs, BITS_PER_PIXEL_RGBW};
+use led_task::{run_led_0, run_led_1, run_led_2, run_led_3};
 use embassy_rp::spi::{Config as SpiConfig, Spi};
 use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -46,6 +52,9 @@ bind_interrupts!(struct Irqs {
 });
 bind_interrupts!(struct Irqs1 {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
+});
+bind_interrupts!(struct Irqs2 {
+    PIO2_IRQ_0 => InterruptHandler<PIO2>;
 });
 
 /// Convert subnet mask to prefix length
@@ -92,6 +101,10 @@ const W5500_SPI_CS: u8 = 17;
 const W5500_INT: u8 = 21;
 #[allow(dead_code)]
 const W5500_RST: u8 = 20;
+
+// Network reset button (momentary, IO0 to GND)
+#[allow(dead_code)]
+const NETWORK_RESET_BUTTON_PIN: u8 = 0;
 
 // DMX output pins (Custom board)
 // DMX1: TX: IO4, DIR: IO5, RX: IO6
@@ -167,6 +180,15 @@ async fn main(spawner: Spawner) {
 
     // Wait for file system task to finish
     Timer::after(Duration::from_millis(10)).await;
+
+    // ========================================================================
+    // Network Reset Button
+    // ========================================================================
+
+    // Spawned before the W5500 comes up so the network settings can still be
+    // reset when a bad static IP (or a dead Ethernet chip) makes the web
+    // interface unreachable.
+    spawner.spawn(network_reset_button_task(p.PIN_0).unwrap());
 
     // ========================================================================
     // W5500 Ethernet Setup
@@ -348,6 +370,10 @@ async fn main(spawner: Spawner) {
         p.PIN_7,  // DMX2 TX
         p.PIN_10, // DMX3 TX
         p.PIN_13, // DMX4 TX
+        p.DMA_CH7,
+        p.DMA_CH8,
+        p.DMA_CH9,
+        p.DMA_CH10,
     );
     log!("[MAIN] PIO0 DMX TX outputs initialized (4 independent SMs)").await;
 
@@ -373,6 +399,36 @@ async fn main(spawner: Spawner) {
         p.PIN_15, // DMX4 RX
     );
     log!("[MAIN] PIO1 DMX RX inputs initialized (4 independent SMs)").await;
+
+    // PIO2: WS281x LED outputs (4 state machines, one per output).
+    // This is the last PIO block on the RP2350 — PIO0 and PIO1 are fully
+    // consumed above, so there is no spare state machine for a fifth output.
+    let Pio {
+        common: mut common2,
+        sm0: sm0_led,
+        sm1: sm1_led,
+        sm2: sm2_led,
+        sm3: sm3_led,
+        ..
+    } = Pio::new(p.PIO2, Irqs2);
+
+    let (led0, led1, led2, led3) = create_led_outputs(
+        &mut common2,
+        sm0_led,
+        sm1_led,
+        sm2_led,
+        sm3_led,
+        p.PIN_22, // LED1 -> 74AHCT125 1A, J6 pin 5
+        p.PIN_26, // LED2 -> 74AHCT125 2A, J6 pin 7
+        p.PIN_27, // LED3 -> 74AHCT125 3A, J6 pin 9
+        p.PIN_28, // LED4 -> 74AHCT125 4A, J6 pin 11
+        p.DMA_CH3,
+        p.DMA_CH4,
+        p.DMA_CH5,
+        p.DMA_CH6,
+        BITS_PER_PIXEL_RGBW,
+    );
+    log!("[MAIN] PIO2 LED outputs initialized (4 independent SMs)").await;
 
     // Individual DIR pins for each DMX port (RS485 direction) - Flex so we can set floating when Inactive
     let mut dmx1_dir = Flex::new(p.PIN_5);
@@ -400,7 +456,15 @@ async fn main(spawner: Spawner) {
     spawner.spawn(send_dmx_1(dmx1, dmx1_rx, dmx2_dir, 7, stack_ref).unwrap());
     spawner.spawn(send_dmx_2(dmx2, dmx2_rx, dmx3_dir, 10, stack_ref).unwrap());
     spawner.spawn(send_dmx_3(dmx3, dmx3_rx, dmx4_dir, 13, stack_ref).unwrap());
-    
+
+    // Spawn the 4 LED outputs. Pin indices match the PIO2 assignment above and
+    // are used to release the pad to high-Z when an output is Inactive.
+    spawner.spawn(run_led_0(led0, 22).unwrap());
+    spawner.spawn(run_led_1(led1, 26).unwrap());
+    spawner.spawn(run_led_2(led2, 27).unwrap());
+    spawner.spawn(run_led_3(led3, 28).unwrap());
+
+
     // ========================================================================
     // Web Server Setup
     // ========================================================================
@@ -431,11 +495,17 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     info!("Entering main loop...");
+    let mut tick = 0u32;
     loop {
-        // Long heartbeat - Blink every second
-        led.set_high();
-        Timer::after(Duration::from_millis(250)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(750)).await;
+        if button_task::network_reset_button_held() {
+            // Fast blink acknowledges the held network reset button, so the
+            // press is visible before the three second timeout elapses.
+            led.toggle();
+        } else {
+            // Long heartbeat - on for the first 300 ms of every second
+            led.set_level(if tick % 10 < 3 { Level::High } else { Level::Low });
+        }
+        tick = tick.wrapping_add(1);
+        Timer::after(Duration::from_millis(100)).await;
     }
 }

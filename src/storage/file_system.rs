@@ -227,6 +227,12 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
                         try_log!("[FLASH] Warning: Could not lock DMX_PORT_CONFIG");
                     }
 
+                    if let Ok(mut led_config) = crate::led_task::LED_PORT_CONFIG.try_lock() {
+                        led_config.clone_from(&settings.led_ports);
+                    } else {
+                        try_log!("[FLASH] Warning: Could not lock LED_PORT_CONFIG");
+                    }
+
                     if let Ok(mut artnet_config) = ARTNET_NODE_CONFIG.try_lock() {
                         artnet_config.clone_from(&settings.artnet_config);
                     } else {
@@ -322,9 +328,18 @@ pub async fn load_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
 async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     try_log!("[FLASH] Saving settings to filesystem");
 
-    let mut buffer = [0u8; 1024];
+    // Sized for 4 DMX ports + 4 LED ports + network + Art-Net config as JSON.
+    let mut buffer = [0u8; 2048];
 
     // Collect settings from runtime configs with error handling
+    let led_ports = match crate::led_task::LED_PORT_CONFIG.try_lock() {
+        Ok(config) => config.clone(),
+        Err(_) => {
+            try_log!("[FLASH] Warning: Could not lock LED_PORT_CONFIG for save, using defaults");
+            core::array::from_fn(crate::schema::LedPortConfig::default_with_index)
+        }
+    };
+
     let dmx_ports = match DMX_PORT_CONFIG.try_lock() {
         Ok(config) => config.clone(),
         Err(_) => {
@@ -352,6 +367,7 @@ async fn save_settings(fs: &Filesystem<'_, FlashStorage<'_>>) {
     let settings = StoredSettings {
         version: SETTINGS_VERSION,
         dmx_ports,
+        led_ports,
         network_config,
         artnet_config,
     };

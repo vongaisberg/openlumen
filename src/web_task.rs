@@ -29,7 +29,7 @@ use {defmt_rtt as _, panic_probe as _};
 use crate::log;
 
 // Static buffers for JSON serialization
-static mut JSON_BUFFER: String<{ 1024 * 2 }> = String::new();
+static mut JSON_BUFFER: String<{ 1024 * 4 }> = String::new();
 static mut BUFFER: [u8; 1024] = [0; 1024];
 
 /// Runtime network configuration. Will be set at startup.
@@ -187,6 +187,59 @@ impl ws::WebSocketCallback for WebsocketServer {
                                         //    info!("DMX ports saved to flash successfully");
                                         //}
                                         file_system::save_config();
+                                    }
+                                }
+                                "ledPortConfigUpdate" => {
+                                    match serde_json_core::from_str::<
+                                        crate::schema::LedPortConfigUpdate,
+                                    >(text)
+                                    {
+                                    Ok((update, _)) => {
+                                        let _ = tx
+                                            .send_text("LOG: LED port configuration updated")
+                                            .await;
+
+                                        let mut led_config =
+                                            crate::led_task::LED_PORT_CONFIG.lock().await;
+                                        for (i, port_update) in update.data.iter().enumerate() {
+                                            if i < crate::schema::NUM_LED_PORTS {
+                                                let port = &mut led_config[i];
+                                                port.mode = port_update.mode;
+                                                port.start_universe = port_update.start_universe;
+                                                // Clamp so a bad value from the UI cannot make
+                                                // the output task index past its buffer.
+                                                port.pixel_count = port_update.pixel_count.min(
+                                                    crate::schema::MAX_PIXELS_PER_LED_PORT as u16,
+                                                );
+                                                port.start_address =
+                                                    port_update.start_address.clamp(1, 512);
+                                                port.color_order = port_update.color_order;
+                                                port.brightness_cap = port_update.brightness_cap;
+                                                port.reverse = port_update.reverse;
+                                            }
+                                        }
+                                        drop(led_config);
+
+                                        // Wake every output so mode and length changes take
+                                        // effect without waiting for the keepalive.
+                                        for i in 0..crate::schema::NUM_LED_PORTS {
+                                            crate::led_task::notify_led_port(i);
+                                        }
+
+                                        info!("Updated LED port configuration");
+                                        file_system::save_config();
+                                    }
+                                    Err(_) => {
+                                        // Without this the message is dropped in
+                                        // silence and the UI just appears to
+                                        // revert, which is very hard to diagnose.
+                                        let _ = tx
+                                            .send_text(
+                                                "LOG: ERROR - could not parse ledPortConfigUpdate",
+                                            )
+                                            .await;
+                                        warn!("Failed to parse ledPortConfigUpdate");
+                                    }
                                     }
                                 }
                                 "networkConfigUpdate" => {
@@ -511,12 +564,18 @@ async fn send_state_update<
         port.has_failsafe = failsafe_stored[i];
     }
 
+    let led_ports: Vec<crate::schema::LedPortStatus, { crate::schema::NUM_LED_PORTS }> = {
+        let config = crate::led_task::LED_PORT_CONFIG.lock().await;
+        config.iter().map(Into::into).collect()
+    };
+
     let status = StateUpdate {
         type_: "stateUpdate",
         data: StateUpdateData {
             network_config: Some(network_config),
             artnet_config: Some(artnet_config),
             dmx_ports: Some(dmx_ports_with_sources),
+            led_ports: Some(led_ports),
             system_info: Some(system_info),
         },
     };

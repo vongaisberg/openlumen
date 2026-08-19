@@ -91,6 +91,69 @@ export enum PortMode {
   Input = "Input"
 }
 
+// ---------------------------------------------------------------------------
+// LED (WS281x / WS2815B) outputs
+// ---------------------------------------------------------------------------
+
+export enum LedPortMode {
+  Active = "Active",
+  Inactive = "Inactive",
+  Blackout = "Blackout"
+}
+
+export enum ColorOrder {
+  GRB = "GRB",
+  RGB = "RGB",
+  GRBW = "GRBW",
+  RGBW = "RGBW"
+}
+
+/** Bytes per pixel implied by the colour order. */
+export const bytesPerPixel = (order: ColorOrder): number =>
+  order === ColorOrder.GRBW || order === ColorOrder.RGBW ? 4 : 3;
+
+/** Pixels that fit in one 512-channel universe without straddling a boundary. */
+export const pixelsPerUniverse = (order: ColorOrder): number =>
+  Math.floor(512 / bytesPerPixel(order));
+
+/** LED output as reported by the node (config plus derived read-only fields). */
+export interface LedPortStatus {
+  mode: LedPortMode;
+  startUniverse: number;
+  /** 1-based DMX start address within startUniverse. */
+  startAddress: number;
+  pixelCount: number;
+  colorOrder: ColorOrder;
+  brightnessCap: number;
+  /** Reverse pixel order for strips wired from the far end. */
+  reverse: boolean;
+  universeSpan: number; // Read-only - derived from pixelCount, startAddress and colorOrder
+  maxPixels: number;    // Read-only - firmware buffer limit
+}
+
+/** Editable subset sent back to the node. */
+export interface LedPortConfigUpdateItem {
+  mode: LedPortMode;
+  startUniverse: number;
+  startAddress: number;
+  pixelCount: number;
+  colorOrder: ColorOrder;
+  brightnessCap: number;
+  reverse: boolean;
+}
+
+/**
+ * Absolute channel index of a strip's first byte, counting 512 per universe.
+ * Mirrors LedPortConfig::first_channel in the firmware.
+ */
+export const firstChannel = (startUniverse: number, startAddress: number): number =>
+  startUniverse * 512 + (Math.min(Math.max(startAddress, 1), 512) - 1);
+
+export interface LedPortConfigUpdate {
+  type: 'ledPortConfigUpdate';
+  data: LedPortConfigUpdateItem[];
+}
+
 export enum MergeMode {
   Htp = "Htp",
   Ltp = "Ltp",
@@ -126,6 +189,7 @@ export interface StateUpdateData {
   networkConfig?: NetworkConfig;
   artnetConfig?: ArtnetConfig;
   dmxPorts?: DmxPortConfig[];
+  ledPorts?: LedPortStatus[];
   systemInfo?: SystemInfo;
   artdmxCount?: number;      // Make optional
   droppedPackets?: number;   // Make optional

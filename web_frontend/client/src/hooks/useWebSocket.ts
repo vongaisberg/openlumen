@@ -102,9 +102,18 @@ export default function useWebSocket() {
     };
 
     ws.onmessage = (event) => {
+      // The node interleaves plain-text diagnostic frames ("LOG: ...") with the
+      // JSON state updates on the same socket. They are not JSON, so filter
+      // them out before parsing rather than letting every one throw.
+      const raw = typeof event.data === "string" ? event.data : "";
+      if (raw.startsWith("LOG:")) {
+        console.debug(raw);
+        return;
+      }
+
       try {
-        const message = JSON.parse(event.data);
-        
+        const message = JSON.parse(raw);
+
         if (message.type === "stateUpdate") {
           setData(message.data);
           

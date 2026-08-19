@@ -58,6 +58,7 @@ Three merge modes per port:
 - **DHCP or static IP** — Configure via web interface
 - **Art-Net discovery** — Responds to ArtPoll; appears in lighting software automatically
 - **Real-time status** — Packet rate, packet loss percentage, and connection state
+- **Network reset button** — Momentary button from IO0 to GND; hold 3 seconds to restore the default static IP and reboot. The status LED blinks fast while the button is held. Recovers a node made unreachable by a bad static IP without reflashing; all other settings are kept
 
 ---
 

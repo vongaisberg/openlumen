@@ -131,10 +131,19 @@ async fn sync_artnet_config(node_config: &mut PollReply) {
 pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> ! {
     log!("[ARTNET] ArtNet task starting").await;
     // Use smaller buffers matching embassy examples
-    let mut rx_buffer = [0; 2048];
-    let mut tx_buffer = [0; 1024];
-    let mut rx_meta = [PacketMetadata::EMPTY; 8];
-    let mut tx_meta = [PacketMetadata::EMPTY; 8];
+    // Consoles emit every universe of a frame as a back-to-back burst. With 4
+    // DMX ports plus 4 LED outputs spanning several universes each, a burst can
+    // be 24+ packets of ~530 bytes arriving ~48 us apart on 100 Mbit, which is
+    // faster than they can be drained over SPI. The socket has to absorb the
+    // whole burst or the tail is dropped — and a dropped final universe means
+    // that LED frame never gets triggered at all.
+    //
+    // 32 slots / 24 kB covers a 32-universe burst with headroom. This lives in
+    // the task future, and there is ~350 kB of SRAM spare.
+    let mut rx_buffer = [0; 24 * 1024];
+    let mut tx_buffer = [0; 4096];
+    let mut rx_meta = [PacketMetadata::EMPTY; 32];
+    let mut tx_meta = [PacketMetadata::EMPTY; 16];
 
     let mut socket = UdpSocket::new(
         *stack,
@@ -268,6 +277,22 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                         u16::from_be_bytes([recv_buf[16], recv_buf[17]]) as usize;
 
                                     if length > 512 {
+                                        continue;
+                                    }
+
+                                    // LED outputs are matched first, on the whole 15-bit
+                                    // port address. They deliberately bypass the node's
+                                    // Net/Subnet filter below: a strip spanning several
+                                    // universes can cross a Subnet boundary, and the four
+                                    // outputs together can claim more than the 16
+                                    // universes one Net/Subnet provides.
+                                    if 18 + length <= recv_buf.len()
+                                        && crate::led_task::ingest_universe(
+                                            universe,
+                                            &recv_buf[18..18 + length],
+                                        )
+                                        .await
+                                    {
                                         continue;
                                     }
 
@@ -411,6 +436,12 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                 // Ensure config is up to date before replying
                                 sync_artnet_config(&mut node_config).await;
 
+                                // Art-Net carries at most 4 ports per ArtPollReply, so a
+                                // node with more must send one reply per "page", each
+                                // distinguished by BindIndex. Page 1 is the four DMX
+                                // ports; the LED outputs follow.
+                                node_config.bind_index = 1;
+
                                 let mut reply_buf = [0u8; 240];
                                 let len = match node_config.to_buffer(&mut reply_buf) {
                                     Ok(len) => len,
@@ -424,6 +455,8 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                 {
                                     error!("Failed to send ArtPollReply: {:?}", e);
                                 }
+
+                                send_led_poll_replies(&socket, &node_config, ep.endpoint).await;
                             }
 
                             OPCODE_POLL_REPLY => {
@@ -557,6 +590,80 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
 /// Returns true if any source for this port is active.
 fn port_has_any_active(sources: &[ArtnetSource; MAX_SOURCES_PER_PORT]) -> bool {
     sources.iter().any(|s| s.active)
+}
+
+/// Advertise the LED outputs as additional ArtPollReply pages.
+///
+/// A multi-universe LED strip is, in Art-Net terms, several output ports: the
+/// protocol maps one port to one universe. Each strip's universes are grouped
+/// into pages of up to four, split wherever a group would cross a Net/Subnet
+/// boundary (a single reply carries one Net/Subnet for all its ports).
+/// BindIndex continues from the DMX page, so controllers see one node with
+/// several bound port groups rather than several unrelated nodes.
+async fn send_led_poll_replies(
+    socket: &UdpSocket<'_>,
+    base_reply: &PollReply,
+    endpoint: embassy_net::IpEndpoint,
+) {
+    let led_config = { crate::led_task::LED_PORT_CONFIG.lock().await.clone() };
+    let mut bind_index: u8 = 2;
+
+    for cfg in led_config.iter() {
+        let span = cfg.universe_span();
+        let mut first = 0usize;
+
+        while first < span {
+            let base_addr = cfg.start_universe + first as u16;
+
+            // Extend the page while the universes stay in the same Net/Subnet
+            // (identical above bit 3) and it holds fewer than four ports.
+            let mut count = 0usize;
+            while count < 4 && first + count < span {
+                let addr = cfg.start_universe + (first + count) as u16;
+                if (addr >> 4) != (base_addr >> 4) {
+                    break;
+                }
+                count += 1;
+            }
+
+            let mut page = base_reply.clone();
+            page.bind_index = bind_index;
+            page.net = (base_addr >> 8) as u8;
+            page.sub_net = ((base_addr >> 4) & 0x0F) as u8;
+            page.num_ports = count as u16;
+            page.port_types = [PortTypes::empty(); 4];
+            page.good_input = [GoodInput::InputDisabled; 4];
+            page.good_output = [GoodOutputA::empty(); 4];
+            page.good_output_b = [GoodOutputB::empty(); 4];
+            page.sw_in = [0; 4];
+            page.sw_out = [0; 4];
+
+            let transmitting = cfg.mode != crate::schema::LedPortMode::Inactive;
+            for slot in 0..count {
+                let addr = cfg.start_universe + (first + slot) as u16;
+                page.port_types[slot] = PortTypes::Output | PortTypes::DMX512;
+                page.good_output[slot] = if transmitting {
+                    GoodOutputA::DataTransmitting
+                } else {
+                    GoodOutputA::empty()
+                };
+                page.sw_out[slot] = (addr & 0x0F) as u8;
+            }
+
+            let mut reply_buf = [0u8; 240];
+            match page.to_buffer(&mut reply_buf) {
+                Ok(len) => {
+                    if let Err(e) = socket.send_to(&reply_buf[..len], endpoint).await {
+                        error!("Failed to send LED ArtPollReply: {:?}", e);
+                    }
+                }
+                Err(e) => error!("Failed to serialize LED ArtPollReply: {:?}", e),
+            }
+
+            bind_index = bind_index.saturating_add(1);
+            first += count;
+        }
+    }
 }
 
 /// Merge DMX data from multiple sources according to merge mode

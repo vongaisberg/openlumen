@@ -4,6 +4,7 @@ import { useToast } from "@/hooks/use-toast";
 import NetworkSettings from "./NetworkSettings";
 import ArtNetSettings from "./ArtNetSettings";
 import DmxPorts from "./DmxPorts";
+import LedPorts from "./LedPorts";
 import SystemInfo from "./SystemInfo";
 import ConnectionStatus from "./ConnectionStatus";
 import useWebSocket from "@/hooks/useWebSocket";
@@ -11,7 +12,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Moon, Sun, LayoutDashboard, Wifi, Radio, Cpu } from "lucide-react";
+import { Moon, Sun, LayoutDashboard, Wifi, Radio, Cpu, Lightbulb } from "lucide-react";
 import type { DmxPortOutput } from "@shared/types";
 
 function getPacketLossClass(loss: number) {
@@ -28,6 +29,7 @@ interface TabComponentProps {
 
 const tabs = [
   { id: "dmx", label: "DMX Ports", icon: LayoutDashboard, component: DmxPorts as React.ComponentType<TabComponentProps> },
+  { id: "led", label: "LED Outputs", icon: Lightbulb, component: LedPorts as React.ComponentType<TabComponentProps> },
   { id: "network", label: "Network", icon: Wifi, component: NetworkSettings as React.ComponentType<TabComponentProps> },
   { id: "artnet", label: "ArtNet", icon: Radio, component: ArtNetSettings as React.ComponentType<TabComponentProps> },
   { id: "system", label: "System", icon: Cpu, component: SystemInfo as React.ComponentType<TabComponentProps> },
@@ -150,7 +152,7 @@ export default function ArtNetNode() {
             {/* Mobile tabs */}
             <div className="sm:hidden mb-4">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
-                <TabsList className="grid w-full grid-cols-4">
+                <TabsList className="grid w-full grid-cols-5">
                   {tabs.map((tab) => (
                     <TabsTrigger key={tab.id} value={tab.id} className="text-xs">
                       {tab.label}

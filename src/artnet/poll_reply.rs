@@ -6,6 +6,7 @@ const ART_POLL_REPLY_OPCODE: u16 = 0x2100;
 
 pub const BUFFER_SIZE: usize = 240; // Standard ArtPollReply size
 
+#[derive(Clone)]
 pub struct PollReply {
     /// Array containing the Node’s IP address. First
     /// array entry is most significant byte of address.
@@ -181,6 +182,7 @@ impl PollReply {
 }
 
 bitflags! {
+    #[derive(Clone, Copy)]
     pub struct Status1: u8 {
         /// 1 = UBEA present
         const UBEA = 0b00000001;
@@ -208,6 +210,7 @@ bitflags! {
 
 bitflags! {
 
+    #[derive(Clone, Copy)]
     pub struct PortTypes: u8 {
         // Lower 5 bits are the port type.
         const DMX512 = 0b00000000;
@@ -226,6 +229,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Clone, Copy)]
     pub struct GoodInput: u8 {
         /// 1 = Data received.
         const DataReceived = 0b10000000;
@@ -247,7 +251,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct GoodOutputA: u8 {
         /// 1 = Data is being transmitted.
         const DataTransmitting = 0b10000000;
@@ -270,7 +274,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct SwMacro: u8 {
         /// 1 = Macro 8 active
         const Macro8 = 0b10000000;
@@ -292,7 +296,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct SwRemote: u8 {
         /// 1 = Remote 8 active
         const Remote8 = 0b10000000;
@@ -326,7 +330,7 @@ pub enum StyleCode {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct Status2: u8 {
         /// 1 Node supports control of RDM using ArtCommand
         const RDM = 0b10000000;
@@ -349,7 +353,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct GoodOutputB: u8 {
         /// 1 = RDM enabled
         const RDM = 0b10000000;
@@ -364,7 +368,7 @@ bitflags! {
 }
 
 bitflags! {
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub struct Status3: u8 {
         // Failsafe state
         /// 00 = hold
