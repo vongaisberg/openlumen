@@ -33,6 +33,9 @@ use fixed_macro::types::U56F8;
 /// Divider is 150 MHz / 8 MHz = 18.75, exactly representable in the 16.8
 /// fixed-point clock divider.
 
+/// Time on the wire for one bit at 800 kbit/s.
+const BIT_PERIOD_NS: u64 = 1_250;
+
 /// Low time after a frame that latches the pixels. WS2815B needs > 280 µs;
 /// 300 µs gives margin without meaningfully costing frame rate.
 pub const RESET_LATCH_US: u64 = 300;
@@ -47,6 +50,9 @@ pub const BITS_PER_PIXEL_RGB: u8 = 24;
 pub struct LedPio<'d, PIO: Instance, const SM: usize> {
     sm: StateMachine<'d, PIO, SM>,
     dma: Peri<'d, AnyChannel>,
+    /// Autopull threshold, kept so the tail wait matches the part actually
+    /// configured rather than assuming the widest format.
+    bits_per_pixel: u8,
 }
 
 impl<'d, PIO: Instance, const SM: usize> LedPio<'d, PIO, SM> {
@@ -95,6 +101,7 @@ impl<'d, PIO: Instance, const SM: usize> LedPio<'d, PIO, SM> {
         Self {
             sm,
             dma: dma.into(),
+            bits_per_pixel,
         }
     }
 
@@ -109,16 +116,21 @@ impl<'d, PIO: Instance, const SM: usize> LedPio<'d, PIO, SM> {
         }
 
         self.sm.set_enable(true);
+        let bits_per_pixel = self.bits_per_pixel as u64;
         self.sm.tx().dma_push(self.dma.reborrow(), words, false).await;
 
         // dma_push completes when the last word reaches the FIFO, not when it
         // has been clocked out. Drain the FIFO, then wait out the shift of the
         // final pixel before starting the latch.
+        //
+        // Sleep a pixel time between checks rather than yielding: the FIFO holds
+        // up to 8 pixels, so spinning here burns the executor for ~300us per
+        // frame per output with no work to do.
+        let pixel_us = (bits_per_pixel * BIT_PERIOD_NS) / 1_000;
         while !self.sm.tx().empty() {
-            embassy_futures::yield_now().await;
+            embassy_time::Timer::after_micros(pixel_us.max(1)).await;
         }
-        let bits_in_flight = 32u64;
-        let tail_us = (bits_in_flight * 1_250) / 1_000;
+        let tail_us = (bits_per_pixel * BIT_PERIOD_NS) / 1_000;
         embassy_time::Timer::after_micros(tail_us + RESET_LATCH_US).await;
     }
 

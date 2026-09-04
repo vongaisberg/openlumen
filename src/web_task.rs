@@ -28,9 +28,15 @@ use picoserve::{
 use {defmt_rtt as _, panic_probe as _};
 use crate::log;
 
-// Static buffers for JSON serialization
-static mut JSON_BUFFER: String<{ 1024 * 4 }> = String::new();
-static mut BUFFER: [u8; 1024] = [0; 1024];
+/// Scratch space for one websocket connection.
+///
+/// These used to be `static mut` shared by every web task. With
+/// `WEB_TASK_POOL_SIZE` connections that is a data race — two open browser tabs
+/// would serialize into the same buffer, and one task held a `&str` into it
+/// across an await while the other overwrote it. They are per-connection locals
+/// now, which also lets the borrow checker see the aliasing.
+const WS_JSON_CAPACITY: usize = 1024 * 6;
+const WS_RX_CAPACITY: usize = 1024;
 
 /// Runtime network configuration. Will be set at startup.
 pub static NETWORK_NODE_CONFIG: Mutex<ThreadModeRawMutex, NetworkConfig> =
@@ -53,12 +59,18 @@ pub async fn get_config() -> (
     Vec<DmxPortConfig, 4>,
     SystemInfo,
 ) {
-    let stats = ARTNET_STATS.lock().await;
-    let dmx_ports = DMX_PORT_CONFIG.lock().await.clone();
+    // Each lock is taken, copied out and released before the next one. Holding
+    // several of these at once (and previously an ADC conversion as well) puts
+    // this on the same lock-ordering graph as the Art-Net receive path for no
+    // benefit — every value here is small and Copy/Clone.
+    let stats = { *ARTNET_STATS.lock().await };
+    let dmx_ports = { DMX_PORT_CONFIG.lock().await.clone() };
+    let network_config = { NETWORK_NODE_CONFIG.lock().await.clone() };
+    let artnet_config = { ARTNET_NODE_CONFIG.lock().await.clone() };
 
     (
-        NETWORK_NODE_CONFIG.lock().await.clone(),
-        ARTNET_NODE_CONFIG.lock().await.clone(),
+        network_config,
+        artnet_config,
         Vec::from_slice(&dmx_ports).unwrap_or_default(),
         SystemInfo {
             id: None,
@@ -127,6 +139,10 @@ impl ws::WebSocketCallback for WebsocketServer {
         let mut last_send = Instant::now();
         let mut next_port = 4u8;
 
+        // Per-connection scratch, see WS_JSON_CAPACITY.
+        let mut rx_buf = [0u8; WS_RX_CAPACITY];
+        let mut json_buf = [0u8; WS_JSON_CAPACITY];
+
         let close_reason = loop {
             let now = Instant::now();
             let time_until_next = if now.duration_since(last_send) >= Duration::from_millis(25) {
@@ -135,17 +151,18 @@ impl ws::WebSocketCallback for WebsocketServer {
                 Duration::from_millis(25) - now.duration_since(last_send)
             };
 
-            match select(
+            let event = select(
                 embassy_time::Timer::after(time_until_next),
-                rx.next_message(unsafe { &mut *core::ptr::addr_of_mut!(BUFFER) }),
+                rx.next_message(&mut rx_buf),
             )
-            .await
-            {
+            .await;
+
+            match event {
                 Either::First(_) => {
                     if next_port == 4 {
-                        send_state_update::<R, W>(&mut tx).await;
+                        send_state_update::<R, W>(&mut tx, &mut json_buf).await;
                     } else {
-                        send_dmx_update::<R, W>(&mut tx, next_port).await;
+                        send_dmx_update::<R, W>(&mut tx, next_port, &mut json_buf).await;
                     }
                     last_send = Instant::now();
                     next_port = (next_port + 1) % 5;
@@ -419,7 +436,7 @@ impl ws::WebSocketCallback for WebsocketServer {
                                                     file_system::save_config();
                                                     
                                                     // Send updated state
-                                                    send_state_update::<R, W>(&mut tx).await;
+                                                    send_state_update::<R, W>(&mut tx, &mut json_buf).await;
                                                 }
                                                 SystemAction::FactoryReset => {
                                                     let _ = tx
@@ -518,7 +535,10 @@ pub async fn web_task(
     log!("[WEB] Web task {} started", id).await;
     let port = 80;
     let mut tcp_rx_buffer = [0; 1024];
-    let mut tcp_tx_buffer = [0; 1024];
+    // A dmxOutputUpdate frame is up to ~2.1 kB of JSON. With a 1 kB send buffer
+    // every one of them blocked mid-message waiting for an ACK; sized to hold a
+    // whole message the write completes without a round trip in the common case.
+    let mut tcp_tx_buffer = [0; 4096];
     let mut http_buffer = [0; 2048];
 
     picoserve::listen_and_serve(
@@ -540,28 +560,34 @@ async fn send_state_update<
     W: embedded_io_async::Write<Error = R::Error>,
 >(
     tx: &mut ws::SocketTx<W>,
+    json_buf: &mut [u8; WS_JSON_CAPACITY],
 ) {
     let (network_config, artnet_config, dmx_ports, system_info) = get_config().await;
 
-    let artnet_sources = ARTNET_SOURCES.lock().await;
-
+    // Everything below is built into owned values and every guard is released
+    // before the send. `send_text` waits for TCP to drain, which is a round trip
+    // at best; holding ARTNET_SOURCES across it stops the Art-Net task calling
+    // recv_from at all, and the receive socket then overruns.
     let mut dmx_ports_with_sources: Vec<DmxPortConfig, 4> = dmx_ports.clone();
-    let failsafe_stored = FAILSAFE_STORED.lock().await;
-    for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
-        // Safe bounds check for artnet_sources array access
-        if let Some(sources) = artnet_sources.get(i) {
-            port.source_devices = sources
-                .iter()
-                .filter(|source| source.active)
-                .map(|source| SourceDevice {
-                    name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
-                    ip: source.ip,
-                    packets_per_second: Some(source.frequency),
-                    physical: source.last_packet_physical,
-                })
-                .collect();
+    {
+        let artnet_sources = ARTNET_SOURCES.lock().await;
+        let failsafe_stored = FAILSAFE_STORED.lock().await;
+        for (i, port) in dmx_ports_with_sources.iter_mut().enumerate() {
+            // Safe bounds check for artnet_sources array access
+            if let Some(sources) = artnet_sources.get(i) {
+                port.source_devices = sources
+                    .iter()
+                    .filter(|source| source.active)
+                    .map(|source| SourceDevice {
+                        name: String::<17>::from_utf8(Vec::from_slice(&source.name).unwrap_or_default()).unwrap_or_default(),
+                        ip: source.ip,
+                        packets_per_second: Some(source.frequency),
+                        physical: source.last_packet_physical,
+                    })
+                    .collect();
+            }
+            port.has_failsafe = failsafe_stored[i];
         }
-        port.has_failsafe = failsafe_stored[i];
     }
 
     let led_ports: Vec<crate::schema::LedPortStatus, { crate::schema::NUM_LED_PORTS }> = {
@@ -580,11 +606,38 @@ async fn send_state_update<
         },
     };
 
-    unsafe {
-        if let Ok(json) = serde_json_core::to_string(&status) {
-            JSON_BUFFER = json;
-            let _ = tx.send_text(&*core::ptr::addr_of!(JSON_BUFFER)).await;
+    send_json(tx, json_buf, &status, "stateUpdate").await;
+}
+
+/// Serialize `value` into `json_buf` and send it as a websocket text frame.
+///
+/// A message that does not fit used to be dropped in total silence, which looks
+/// exactly like a hung UI. `what` names the message in the warning.
+async fn send_json<W, T>(
+    tx: &mut ws::SocketTx<W>,
+    json_buf: &mut [u8; WS_JSON_CAPACITY],
+    value: &T,
+    what: &'static str,
+) where
+    W: embedded_io_async::Write,
+    T: serde::Serialize,
+{
+    let len = match serde_json_core::to_slice(value, json_buf) {
+        Ok(len) => len,
+        Err(_) => {
+            warn!(
+                "{} did not fit in the {} byte websocket buffer - message dropped",
+                what, WS_JSON_CAPACITY
+            );
+            return;
         }
+    };
+
+    match core::str::from_utf8(&json_buf[..len]) {
+        Ok(text) => {
+            let _ = tx.send_text(text).await;
+        }
+        Err(_) => warn!("{} serialized to invalid UTF-8", what),
     }
 }
 
@@ -598,6 +651,7 @@ async fn send_dmx_update<
 >(
     tx: &mut ws::SocketTx<W>,
     port: u8,
+    json_buf: &mut [u8; WS_JSON_CAPACITY],
 ) {
     // Validate port index
     let port_idx = port as usize;
@@ -606,27 +660,24 @@ async fn send_dmx_update<
         return;
     }
 
+    // Copy the frame out and drop the guard immediately. This lock is held by
+    // every DMX output task once per frame; blocking it for the duration of a
+    // TCP write stalls all four ports.
+    let snapshot = {
+        let dmx_buffer = DMX_BUFFER.lock().await;
+        dmx_buffer[port_idx]
+    };
+
     let mut dmx_outputs = Vec::new();
-
-    let dmx_buffer = DMX_BUFFER.lock().await;
-
-    // Safe: we validated port_idx < NUM_DMX_PORTS above
-    if let Some(port_buffer) = dmx_buffer.get(port_idx) {
-        let _ = dmx_outputs.push(DmxPortOutput {
-            port_number: port,
-            dmx_data: Vec::from_slice(&port_buffer[1..513]).unwrap_or_default(),
-        });
-    }
+    let _ = dmx_outputs.push(DmxPortOutput {
+        port_number: port,
+        dmx_data: Vec::from_slice(&snapshot[1..513]).unwrap_or_default(),
+    });
 
     let update = DmxOutputUpdate {
         type_: "dmxOutputUpdate",
         data: dmx_outputs,
     };
 
-    unsafe {
-        if let Ok(json) = serde_json_core::to_string(&update) {
-            JSON_BUFFER = json;
-            let _ = tx.send_text(&*core::ptr::addr_of!(JSON_BUFFER)).await;
-        }
-    }
+    send_json(tx, json_buf, &update, "dmxOutputUpdate").await;
 }

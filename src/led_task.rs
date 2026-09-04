@@ -68,11 +68,25 @@ const DEFAULT_LED_PORT_CONFIG_1: LedPortConfig = default_led_port(1);
 const DEFAULT_LED_PORT_CONFIG_2: LedPortConfig = default_led_port(2);
 const DEFAULT_LED_PORT_CONFIG_3: LedPortConfig = default_led_port(3);
 
-/// Per-output "new frame ready" signals.
+/// Per-output "complete frame ready" signals: every universe of the strip has
+/// landed since the last shift-out.
 pub static LED_NEW_DATA_0: Signal<ThreadModeRawMutex, ()> = Signal::new();
 pub static LED_NEW_DATA_1: Signal<ThreadModeRawMutex, ()> = Signal::new();
 pub static LED_NEW_DATA_2: Signal<ThreadModeRawMutex, ()> = Signal::new();
 pub static LED_NEW_DATA_3: Signal<ThreadModeRawMutex, ()> = Signal::new();
+
+/// Per-output "some data arrived" signals.
+///
+/// A strip spanning several universes is only triggered once its final universe
+/// lands, which keeps frames from tearing across packets. But it also means a
+/// single lost tail packet used to drop that output all the way to the
+/// [`KEEPALIVE`] rate — one dropped packet, 500 ms of frozen strip. These
+/// signals give the output a second, much shorter deadline: wait briefly for
+/// the rest of the burst, and shift out what did arrive if it never comes.
+pub static LED_PARTIAL_0: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static LED_PARTIAL_1: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static LED_PARTIAL_2: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static LED_PARTIAL_3: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 /// Notify one LED output that a complete frame is in its buffer.
 pub fn notify_led_port(port: usize) {
@@ -81,6 +95,17 @@ pub fn notify_led_port(port: usize) {
         1 => LED_NEW_DATA_1.signal(()),
         2 => LED_NEW_DATA_2.signal(()),
         3 => LED_NEW_DATA_3.signal(()),
+        _ => {}
+    }
+}
+
+/// Notify one LED output that at least one of its universes has arrived.
+fn notify_led_partial(port: usize) {
+    match port {
+        0 => LED_PARTIAL_0.signal(()),
+        1 => LED_PARTIAL_1.signal(()),
+        2 => LED_PARTIAL_2.signal(()),
+        3 => LED_PARTIAL_3.signal(()),
         _ => {}
     }
 }
@@ -111,8 +136,17 @@ fn set_led_pin_pio(pin_index: u8) {
 /// hold, so this only needs to be often enough to recover from a glitch.
 const KEEPALIVE: Duration = Duration::from_millis(500);
 
+/// How long to wait for the rest of a burst after a strip's first universe
+/// arrives before shifting out anyway.
+///
+/// A console emits all the universes of a frame back to back, so the remainder
+/// normally lands within a millisecond and the complete-frame signal wins this
+/// race. The deadline only matters when a packet was lost, and it bounds the
+/// damage at one late frame instead of dropping to [`KEEPALIVE`].
+const PARTIAL_FRAME_GRACE: Duration = Duration::from_millis(20);
+
 macro_rules! define_led_task {
-    ($task_name:ident, $port:literal, $signal:ident) => {
+    ($task_name:ident, $port:literal, $signal:ident, $partial:ident) => {
         #[embassy_executor::task]
         pub async fn $task_name(
             mut output: LedPio<'static, PIO2, $port>,
@@ -131,7 +165,32 @@ macro_rules! define_led_task {
             let mut last_stats = Instant::now();
 
             loop {
-                embassy_futures::select::select($signal.wait(), Timer::after(KEEPALIVE)).await;
+                match embassy_futures::select::select3(
+                    $signal.wait(),
+                    $partial.wait(),
+                    Timer::after(KEEPALIVE),
+                )
+                .await
+                {
+                    // Whole frame is in; shift it out now.
+                    embassy_futures::select::Either3::First(_) => {}
+                    // Part of a frame is in. Give the rest of the burst a
+                    // moment; if the tail was lost, render what we have.
+                    embassy_futures::select::Either3::Second(_) => {
+                        let _ = embassy_futures::select::select(
+                            $signal.wait(),
+                            Timer::after(PARTIAL_FRAME_GRACE),
+                        )
+                        .await;
+                    }
+                    // Nothing arriving; refresh so the strip recovers from a glitch.
+                    embassy_futures::select::Either3::Third(_) => {}
+                }
+
+                // Consume both flags before reading the buffer. Anything that
+                // lands from here on sets them again and wakes the next pass.
+                $signal.reset();
+                $partial.reset();
 
                 let (mode, pixels, color_order, brightness, reverse) = {
                     let config = LED_PORT_CONFIG.lock().await;
@@ -193,10 +252,10 @@ macro_rules! define_led_task {
     };
 }
 
-define_led_task!(run_led_0, 0, LED_NEW_DATA_0);
-define_led_task!(run_led_1, 1, LED_NEW_DATA_1);
-define_led_task!(run_led_2, 2, LED_NEW_DATA_2);
-define_led_task!(run_led_3, 3, LED_NEW_DATA_3);
+define_led_task!(run_led_0, 0, LED_NEW_DATA_0, LED_PARTIAL_0);
+define_led_task!(run_led_1, 1, LED_NEW_DATA_1, LED_PARTIAL_1);
+define_led_task!(run_led_2, 2, LED_NEW_DATA_2, LED_PARTIAL_2);
+define_led_task!(run_led_3, 3, LED_NEW_DATA_3, LED_PARTIAL_3);
 
 /// Route one ArtDmx universe into the LED pixel buffers.
 ///
@@ -232,6 +291,10 @@ pub async fn ingest_universe(addr: u16, data: &[u8]) -> bool {
         }
 
         matched = true;
+
+        // Arm the short deadline so a lost tail packet costs one late frame
+        // rather than stalling the output until the keepalive.
+        notify_led_partial(port);
 
         // Only kick the output once the universe carrying the strip's final
         // byte has landed, so frames are shifted out whole instead of torn

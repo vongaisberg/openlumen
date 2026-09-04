@@ -51,6 +51,22 @@ pub struct ArtnetSource {
     pub last_packet_physical: u8,
     pub last_packet_time: Instant,
     pub last_packet_dmx: [u8; 513],
+
+    /// Sequence-gap accounting for the current stats window.
+    ///
+    /// The Art-Net sequence field is specified per port-address, but plenty of
+    /// controllers run a single counter across every universe they send. On
+    /// such a source the sequence for one universe advances by the number of
+    /// universes each frame, and treating that as loss reported drop rates of
+    /// several hundred percent while nothing was actually being dropped.
+    ///
+    /// So the stride is measured rather than assumed: over a one second window
+    /// the smallest gap seen is the source's true step (loss only ever makes a
+    /// gap larger, never smaller), and the expected packet count is the total
+    /// advance divided by that stride.
+    pub seq_gap_total: u32,
+    pub seq_gap_min: u8,
+    pub seq_samples: u32,
 }
 
 pub const DEFAULT_ARTNET_SOURCE: ArtnetSource = ArtnetSource {
@@ -63,6 +79,9 @@ pub const DEFAULT_ARTNET_SOURCE: ArtnetSource = ArtnetSource {
     last_packet_physical: 0,
     last_packet_time: Instant::MIN,
     last_packet_dmx: [0; 513],
+    seq_gap_total: 0,
+    seq_gap_min: 0,
+    seq_samples: 0,
 };
 
 /// Storage for ArtNet sources (2 sources per port for merging)
@@ -222,30 +241,33 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
     // Initial sync of runtime Art-Net config to node_config
     sync_artnet_config(&mut node_config).await;
 
-    let mut dropped_packets = 0u32;
-    let mut last_stats_update = Instant::now();
     let mut recv_buf = [0u8; 700]; // DMX packet max ~640 bytes
 
-    loop {
-        // Yield to let other tasks run
-        yield_now().await;
+    let mut next_stats_update = Instant::now() + STATS_INTERVAL;
 
-        // Determine how long until the next stats update is due
-        let now = Instant::now();
-        let elapsed = now.duration_since(last_stats_update);
-        let stats_interval = Duration::from_secs(1);
-        let timeout = if elapsed >= stats_interval {
-            Duration::from_millis(0)
-        } else {
-            stats_interval - elapsed
-        };
+    loop {
+        // Run the stats window from its own deadline rather than racing it
+        // against the socket. `select` polls the receive future first, so under
+        // sustained traffic the timer arm never won and the per-source packet
+        // rates simply stopped updating.
+        if Instant::now() >= next_stats_update {
+            update_stats(&mut node_config).await;
+            next_stats_update = Instant::now() + STATS_INTERVAL;
+            continue;
+        }
 
         // Wait for either:
         // 1. Incoming ArtNet packet
-        // 2. Stats timer expiry
+        // 2. Stats deadline
+        //
+        // There is deliberately no yield_now() here. Draining is the whole job
+        // of this task and recv_from already yields whenever the socket runs
+        // dry; a yield per packet made every packet cost a full pass over the
+        // executor run queue, which is what a burst of 12+ universes cannot
+        // afford.
         match embassy_futures::select::select(
             socket.recv_from(&mut recv_buf),
-            Timer::after(timeout),
+            Timer::at(next_stats_update),
         )
         .await
         {
@@ -348,11 +370,15 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     };
 
                                     // Initialize new source
-                                    if !source.active {
+                                    let is_new_source = !source.active;
+                                    if is_new_source {
                                         source.active = true;
                                         source.ip = sender_ip;
                                         source.name = [0; 17];
                                         write_ip_to_buf(sender_ip, &mut source.name);
+                                        source.seq_gap_total = 0;
+                                        source.seq_gap_min = 0;
+                                        source.seq_samples = 0;
                                         info!(
                                             "New ArtNet source for port {}: {}.{}.{}.{}",
                                             port_index,
@@ -366,20 +392,24 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                                     // Track packet count
                                     source.packet_count += 1;
 
-                                    // Check sequence
-                                    let expected = if source.last_packet_sequence == 255 {
-                                        1
-                                    } else {
-                                        source.last_packet_sequence.wrapping_add(1)
-                                    };
-
-                                    if sequence != expected && sequence != 0 {
-                                        let dropped = if sequence > expected {
-                                            sequence - expected
+                                    // Accumulate the sequence gap for this window. Sequence 0
+                                    // means the source has sequencing disabled, and the first
+                                    // packet from a source has nothing to compare against.
+                                    if sequence != 0 && source.last_packet_sequence != 0 && !is_new_source {
+                                        // Art-Net wraps 255 -> 1, skipping 0, so the wrapped
+                                        // gap spans 255 values rather than 256.
+                                        let gap = if sequence >= source.last_packet_sequence {
+                                            sequence - source.last_packet_sequence
                                         } else {
-                                            sequence.wrapping_sub(expected)
+                                            255 - source.last_packet_sequence + sequence
                                         };
-                                        dropped_packets += dropped as u32;
+                                        if gap > 0 {
+                                            source.seq_gap_total += gap as u32;
+                                            source.seq_samples += 1;
+                                            if source.seq_gap_min == 0 || gap < source.seq_gap_min {
+                                                source.seq_gap_min = gap;
+                                            }
+                                        }
                                     }
                                     source.last_packet_sequence = sequence;
                                     source.last_packet_time = now;
@@ -501,90 +531,104 @@ pub async fn artnet_task(stack: &'static Stack<'static>, mac_addr: [u8; 6]) -> !
                 }
             }
             embassy_futures::select::Either::Second(_) => {
-                // Stats timer expired; update statistics and sync configuration
-                let now = Instant::now();
-
-                // Proactively sync Art-Net config so changes take effect without waiting for ArtPoll
-                sync_artnet_config(&mut node_config).await;
-
-                let mut total_packet_count = 0u32;
-
-                let mut sources = ARTNET_SOURCES.lock().await;
-
-                for (port_index, port) in sources.iter_mut().enumerate() {
-                    let mut source_timed_out = false;
-                    for source in port.iter_mut() {
-                        if source.active {
-                            // Check if source hasn't sent packets for 10 seconds
-                            if now.duration_since(source.last_packet_time)
-                                >= Duration::from_secs(10)
-                            {
-                                info!(
-                                    "ArtNet source timeout for {}.{}.{}.{} - marking inactive",
-                                    source.ip[0], source.ip[1], source.ip[2], source.ip[3]
-                                );
-                                source.active = false;
-                                // Set DMX data to 0
-                                source.last_packet_dmx[1..=512].fill(0);
-                                source_timed_out = true;
-                            } else {
-                                total_packet_count += source.packet_count;
-                                source.frequency = source.packet_count;
-                                source.packet_count = 0;
-                            }
-                        }
-                    }
-
-                    if source_timed_out {
-                        // Merge DMX data for this port
-                        let mut buffer = DMX_BUFFER.lock().await;
-                        if let Some(port_buffer) = buffer.get_mut(port_index) {
-                            port_buffer[0] = 0; // Start code
-                            merge_dmx_data(
-                                port_buffer,
-                                port,
-                                &DMX_PORT_CONFIG
-                                    .lock()
-                                    .await
-                                    .get(port_index)
-                                    .unwrap()
-                                    .clone(),
-                                0,
-                            );
-                        }
-                    }
-
-                    // When no source is active for this port, output failsafe scene if stored
-                    if !port_has_any_active(port) {
-                        let stored = FAILSAFE_STORED.lock().await;
-                        let data = FAILSAFE_DATA.lock().await;
-                        if stored[port_index] {
-                            let mut buffer = DMX_BUFFER.lock().await;
-                            if let Some(port_buffer) = buffer.get_mut(port_index) {
-                                port_buffer[1..513].copy_from_slice(&data[port_index]);
-                            }
-                        }
-                    }
-                }
-
-                let drop_rate = if total_packet_count > 0 {
-                    (dropped_packets as f32 / total_packet_count as f32) * 100.0
-                } else {
-                    0.0
-                };
-
-                {
-                    let mut stats = ARTNET_STATS.lock().await;
-                    stats.artdmx_count = total_packet_count;
-                    stats.dropped_packets = dropped_packets;
-                    stats.drop_rate = drop_rate;
-                }
-
-                last_stats_update = now;
-                dropped_packets = 0;
+                // Deadline reached; the top of the loop runs the stats window.
             }
         }
     }
+}
+
+/// How often per-source rates and the drop estimate are recomputed.
+const STATS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Close out a statistics window.
+///
+/// Ages out silent sources, converts each source's accumulated sequence gaps
+/// into a packet-loss estimate, and republishes [`ARTNET_STATS`].
+async fn update_stats(node_config: &mut PollReply) {
+    let now = Instant::now();
+
+    // Proactively sync Art-Net config so changes take effect without waiting for ArtPoll
+    sync_artnet_config(node_config).await;
+
+    let mut total_packet_count = 0u32;
+    let mut total_dropped = 0u32;
+
+    let mut sources = ARTNET_SOURCES.lock().await;
+
+    for (port_index, port) in sources.iter_mut().enumerate() {
+        let mut source_timed_out = false;
+        for source in port.iter_mut() {
+            if !source.active {
+                continue;
+            }
+
+            // Check if source hasn't sent packets for 10 seconds
+            if now.duration_since(source.last_packet_time) >= Duration::from_secs(10) {
+                info!(
+                    "ArtNet source timeout for {}.{}.{}.{} - marking inactive",
+                    source.ip[0], source.ip[1], source.ip[2], source.ip[3]
+                );
+                source.active = false;
+                // Set DMX data to 0
+                source.last_packet_dmx[1..=512].fill(0);
+                source_timed_out = true;
+                continue;
+            }
+
+            total_packet_count += source.packet_count;
+            source.frequency = source.packet_count;
+            source.packet_count = 0;
+
+            // The smallest gap observed this window is the source's sequence
+            // stride: 1 for a per-universe counter, N for a controller running
+            // one counter across N universes. Loss can only widen a gap, so the
+            // minimum is the honest step size.
+            let stride = source.seq_gap_min.max(1) as u32;
+            let steps_sent = source.seq_gap_total / stride;
+            total_dropped += steps_sent.saturating_sub(source.seq_samples);
+
+            source.seq_gap_total = 0;
+            source.seq_gap_min = 0;
+            source.seq_samples = 0;
+        }
+
+        if source_timed_out {
+            // Merge DMX data for this port
+            let port_config = { DMX_PORT_CONFIG.lock().await[port_index].clone() };
+            let mut buffer = DMX_BUFFER.lock().await;
+            if let Some(port_buffer) = buffer.get_mut(port_index) {
+                port_buffer[0] = 0; // Start code
+                merge_dmx_data(port_buffer, port, &port_config, 0);
+            }
+        }
+
+        // When no source is active for this port, output failsafe scene if stored
+        if !port_has_any_active(port) {
+            let stored = FAILSAFE_STORED.lock().await;
+            let data = FAILSAFE_DATA.lock().await;
+            if stored[port_index] {
+                let mut buffer = DMX_BUFFER.lock().await;
+                if let Some(port_buffer) = buffer.get_mut(port_index) {
+                    port_buffer[1..513].copy_from_slice(&data[port_index]);
+                }
+            }
+        }
+    }
+    drop(sources);
+
+    // Denominator is what the sources actually sent, so a clean link reads 0%
+    // regardless of whether the controller sequences per universe or globally.
+    let sent = total_packet_count + total_dropped;
+    let drop_rate = if sent > 0 {
+        (total_dropped as f32 / sent as f32) * 100.0
+    } else {
+        0.0
+    };
+
+    let mut stats = ARTNET_STATS.lock().await;
+    stats.artdmx_count = total_packet_count;
+    stats.dropped_packets = total_dropped;
+    stats.drop_rate = drop_rate;
 }
 
 /// Returns true if any source for this port is active.

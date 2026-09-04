@@ -427,9 +427,12 @@ pub struct LedPortConfigUpdateItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LedPortConfigUpdate {
+pub struct LedPortConfigUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: Vec<LedPortConfigUpdateItem, NUM_LED_PORTS>,
 }
 
@@ -565,23 +568,32 @@ impl From<&LedPortConfig> for LedPortStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DmxPortConfigUpdate {
+pub struct DmxPortConfigUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: Vec<DmxPortConfigUpdateItem, 4>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NetworkConfigUpdate {
+pub struct NetworkConfigUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: NetworkConfigUpdateItem,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArtnetConfigUpdate {
+pub struct ArtnetConfigUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: ArtnetConfigUpdateItem,
 }
 
@@ -600,9 +612,12 @@ pub struct SetFailsafeData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetFailsafeUpdate {
+pub struct SetFailsafeUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: SetFailsafeData,
 }
 
@@ -614,16 +629,20 @@ pub struct DeleteFailsafeData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeleteFailsafeUpdate {
+pub struct DeleteFailsafeUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub data: DeleteFailsafeData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TypedMessage {
+pub struct TypedMessage<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer; see the note on the update envelopes.
+    pub type_: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -637,8 +656,11 @@ pub enum SystemAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemActionUpdate {
+pub struct SystemActionUpdate<'a> {
     #[serde(rename = "type")]
-    pub type_: &'static str,
+    /// Borrowed from the receive buffer. This is deliberately not
+    /// `&'static str`: that forced the websocket task to read into a
+    /// `static mut` shared by every connection.
+    pub type_: &'a str,
     pub action: SystemAction,
 }

@@ -6,6 +6,18 @@
 //! - Data transmission at 250kbaud, 8N2 format
 //!
 //! The CPU controls when frames are sent - PIO only handles the precise timing.
+//!
+//! # Slot timing
+//!
+//! The state machine runs at 250 kHz, one cycle per bit time, and the byte loop
+//! is exactly 11 cycles: 1 start bit + 8 data bits + 2 stop bits = 44 us. There
+//! is no room in those 11 slots for a `pull`, so the data is fed by autopull and
+//! the loop's `jmp` doubles as the second stop bit.
+//!
+//! An earlier version spent 13 cycles per byte (an explicit `pull` plus the
+//! `jmp` on top of the 11 bit times), which stretched a full 513-slot frame to
+//! 26.9 ms and capped the port at 37 fps. At 11 cycles a frame is 22.77 ms,
+//! so 44 fps is reachable.
 
 use defmt::*;
 use embassy_rp::dma::{AnyChannel, Channel};
@@ -24,6 +36,13 @@ pub const DMX_FRAME_SIZE: usize = 513;
 
 /// Words pushed per frame: the PIO loop counter followed by the frame bytes.
 const DMX_WORDS_PER_FRAME: usize = DMX_FRAME_SIZE + 1;
+
+/// Time on the wire for one DMX slot: 11 bit times at 250 kbaud.
+const SLOT_TIME_US: u64 = 44;
+
+/// Time on the wire for a complete frame: break + MAB + 513 slots.
+/// Used by the port tasks to pace transmission.
+pub const FRAME_TIME_US: u64 = 176 + 12 + (DMX_FRAME_SIZE as u64) * SLOT_TIME_US;
 
 /// DMX PIO transmitter
 pub struct DmxPio<'d, PIO: Instance, const SM: usize> {
@@ -62,9 +81,11 @@ impl<'d, PIO: Instance, const SM: usize> DmxPio<'d, PIO, SM> {
         cfg.set_out_pins(&[&out_pin]);
         cfg.set_set_pins(&[&out_pin]);
 
-        // Configure shift register: shift out LSB first
+        // Shift out LSB first (UART order). Autopull is required: the 11-cycle
+        // byte loop has no spare slot for an explicit `pull`, so the state
+        // machine has to refill the OSR by itself.
         cfg.shift_out = ShiftConfig {
-            auto_fill: false,
+            auto_fill: true,
             threshold: 8,
             direction: ShiftDirection::Right,
         };
@@ -121,12 +142,19 @@ impl<'d, PIO: Instance, const SM: usize> DmxPio<'d, PIO, SM> {
 
         // dma_push resolves when the last word reaches the FIFO, not when it
         // has been clocked out; drain before declaring the frame sent.
+        //
+        // Sleeping for a slot time between checks rather than yielding matters:
+        // the FIFO is 8 words deep, so a spin here would busy-poll the executor
+        // for up to 350us per frame per port with nothing else to do.
         while !sm.tx().empty() {
-            embassy_futures::yield_now().await;
+            embassy_time::Timer::after_micros(SLOT_TIME_US).await;
         }
 
-        // Small delay for last byte transmission
-        embassy_time::Timer::after_micros(50).await;
+        // The FIFO reads empty as soon as the state machine pulls the last
+        // word into the OSR, so the final slot is still on the wire here. Wait
+        // out its 11 bit times plus the two cycles the program spends returning
+        // to the frame gate, before the caller drops DE.
+        embassy_time::Timer::after_micros(SLOT_TIME_US + 12).await;
     }
 
     /// Enable or disable the PIO state machine.
@@ -165,31 +193,39 @@ pub fn create_dmx_outputs<'d, PIO: Instance>(
     DmxPio<'d, PIO, 2>,
     DmxPio<'d, PIO, 3>,
 ) {
-    // Load the DMX program once - all state machines share it
+    // Load the DMX program once - all state machines share it.
+    //
+    // One cycle is one bit time (250 kHz clock), so every instruction in the
+    // byte loop has to be doing useful work on the wire. 17 of the 32
+    // instruction slots are used.
+    //
+    // `out x, 32` is both the frame gate and the loop counter. Autopull leaves
+    // the OSR empty once a frame's last byte has been shifted, so this
+    // instruction stalls with the line idling high until `send_frame` queues
+    // the next frame's count word. That is what keeps an idle port from
+    // emitting a break into an empty FIFO.
     let prg = pio_asm!(
         ".wrap_target"
         "start:"
-        "    set pins, 1"           // Idle high
-        "    pull block"            // Wait for frame length
-        "    mov x, osr"            // Save byte count to X
+        "    set pins, 1"           // Idle high (mark)
+        "    out x, 32"             // Gate + slot count; stalls until a frame is queued
         "    set pins, 0"           // Start break (line low)
         "    set y, 21"             // 22 iterations
         "break_loop:"
-        "    jmp y-- break_loop [1]" // 2 cycles per iter = 44 cycles total
-        "    set pins, 1 [2]"       // MAB high, 3 cycles
+        "    jmp y-- break_loop [1]" // 2 cycles per iter = 44 cycles = 176us
+        "    set pins, 1 [2]"       // MAB high, 3 cycles = 12us
         "tx_byte:"
-        "    pull block"            // Get next byte from FIFO
-        "    set pins, 0"           // Start bit (low)
-        "    out pins, 1"           // Bit 0
-        "    out pins, 1"           // Bit 1
-        "    out pins, 1"           // Bit 2
-        "    out pins, 1"           // Bit 3
-        "    out pins, 1"           // Bit 4
-        "    out pins, 1"           // Bit 5
-        "    out pins, 1"           // Bit 6
-        "    out pins, 1"           // Bit 7
-        "    set pins, 1 [1]"       // 2 stop bit cycles
-        "    jmp x-- tx_byte"       // Loop for all bytes
+        "    set pins, 0"           // Start bit (low)      cycle 1
+        "    out pins, 1"           // Bit 0                cycle 2
+        "    out pins, 1"           // Bit 1                cycle 3
+        "    out pins, 1"           // Bit 2                cycle 4
+        "    out pins, 1"           // Bit 3                cycle 5
+        "    out pins, 1"           // Bit 4                cycle 6
+        "    out pins, 1"           // Bit 5                cycle 7
+        "    out pins, 1"           // Bit 6                cycle 8
+        "    out pins, 1"           // Bit 7                cycle 9
+        "    set pins, 1"           // Stop bit 1           cycle 10
+        "    jmp x-- tx_byte"       // Stop bit 2 (line stays high) cycle 11
         ".wrap"
     );
 

@@ -3,7 +3,7 @@
 //! This module manages DMX frame transmission and reception using PIO.
 //! Each DMX port runs as an independent task with its own timing:
 //! - Frames are sent immediately when new ArtNet data arrives
-//! - Periodic refresh frames are sent if no data arrives (1 Hz fallback)
+//! - Periodic refresh frames are sent if no data arrives (10 Hz keepalive)
 //! - Each port can run at different rates independently
 //! - PortMode Inactive: DIR and data pins set floating (high-Z)
 //! - PortMode Blackout: send all-zero DMX frame
@@ -26,7 +26,6 @@ use crate::artnet_task::ARTNET_NODE_CONFIG;
 use crate::dmx_pio::{DmxPio, DMX_FRAME_SIZE};
 use crate::dmx_rx_pio::{DmxRxPio, BREAK_MARKER};
 use crate::schema::{DmxPortConfig, PortMode};
-#[allow(unused_imports)]
 use crate::schema::OutputRate;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -91,13 +90,21 @@ pub static FAILSAFE_STORED: Mutex<ThreadModeRawMutex, [bool; 4]> =
 pub static FAILSAFE_DATA: Mutex<ThreadModeRawMutex, [[u8; 512]; 4]> =
     Mutex::new([[0u8; 512]; 4]);
 
-/// Convert OutputRate to Duration
-#[allow(dead_code)]
+/// Minimum period between frame starts for a configured refresh rate.
+///
+/// This is the only rate limit on the output path. It used to be unused
+/// (`#[allow(dead_code)]`) while a flat 1 ms inter-frame gate did the pacing
+/// instead, which both ignored the user's setting and pushed the top rate down
+/// to ~35.7 fps: a full frame occupies 22.77 ms of wire time, so a further 1 ms
+/// of dead time per frame is the difference between 44 fps and not.
+///
+/// Hz44 is deliberately just under a frame time — at the top setting the wire
+/// is the limit and this check never fires.
 fn rate_to_duration(rate: OutputRate) -> Duration {
     match rate {
-        OutputRate::Hz20 => Duration::from_millis(50),  // 20 Hz
-        OutputRate::Hz30 => Duration::from_millis(33),  // ~30 Hz
-        OutputRate::Hz44 => Duration::from_millis(23),  // ~44 Hz (max DMX rate)
+        OutputRate::Hz20 => Duration::from_millis(50), // 20 Hz
+        OutputRate::Hz30 => Duration::from_millis(33), // ~30 Hz
+        OutputRate::Hz44 => Duration::from_micros(crate::dmx_pio::FRAME_TIME_US), // 43.9 Hz, wire limited
     }
 }
 
@@ -165,36 +172,24 @@ macro_rules! define_dmx_task {
 
             let mut frame_count: u32 = 0;
             let mut last_stats_time = Instant::now();
-            let default_interval = Duration::from_millis(100);
-            let min_inter_frame = Duration::from_millis(1);
+            // Refresh interval when no Art-Net is arriving, so a port keeps
+            // asserting its last frame rather than going quiet.
+            let keepalive_interval = Duration::from_millis(100);
             let mut last_frame_time = Instant::now();
 
             loop {
                 let elapsed = last_frame_time.elapsed();
-                let timeout = if elapsed >= default_interval {
+                let timeout = if elapsed >= keepalive_interval {
                     Duration::from_millis(0)
                 } else {
-                    default_interval - elapsed
+                    keepalive_interval - elapsed
                 };
 
-                match embassy_futures::select::select(
-                    $signal.wait(),
-                    Timer::after(timeout),
-                )
-                .await
-                {
-                    embassy_futures::select::Either::First(_) => {
-                        let since_last = last_frame_time.elapsed();
-                        if since_last < min_inter_frame {
-                            Timer::after(min_inter_frame - since_last).await;
-                        }
-                    }
-                    embassy_futures::select::Either::Second(_) => {}
-                }
+                let _ = embassy_futures::select::select($signal.wait(), Timer::after(timeout)).await;
 
-                let mode = {
+                let (mode, output_rate) = {
                     let config = DMX_PORT_CONFIG.lock().await;
-                    config[$port].mode
+                    (config[$port].mode, config[$port].output_rate)
                 };
 
                 // ---- Inactive mode ----
@@ -379,6 +374,14 @@ macro_rules! define_dmx_task {
                 }
 
                 // ---- Active / Blackout mode (output) ----
+                // Pace to the configured refresh rate. At Hz44 the frame time
+                // itself is the limit and this returns immediately.
+                let min_period = rate_to_duration(output_rate);
+                let since_last = last_frame_time.elapsed();
+                if since_last < min_period {
+                    Timer::after(min_period - since_last).await;
+                }
+
                 dmx_rx.set_sm_enable(false);
                 set_data_pin_pio(data_pin_index);
                 dmx_output.set_sm_enable(true);
@@ -398,12 +401,16 @@ macro_rules! define_dmx_task {
                     &dmx_data
                 };
 
+                // Stamp the frame start, not its end: the rate limit above is a
+                // period between frame starts. Measured from the end it would
+                // add a whole frame time to every period and halve the rate.
+                last_frame_time = Instant::now();
+
                 dmx_output.send_frame(frame_to_send).await;
 
                 Timer::after_micros(100).await;
                 dir_pin.set_low();
 
-                last_frame_time = Instant::now();
                 frame_count += 1;
 
                 let now = Instant::now();

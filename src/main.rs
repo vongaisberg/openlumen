@@ -194,9 +194,15 @@ async fn main(spawner: Spawner) {
     // W5500 Ethernet Setup
     // ========================================================================
 
-    // Configure SPI for W5500
+    // Configure SPI for W5500.
+    //
+    // WIZnet specifies the W5500 SPI interface at up to 33.3 MHz. The previous
+    // 50 MHz is outside that, and marginal SPI on this link shows up as random
+    // frame loss that gets worse exactly when traffic gets heavy — which is
+    // indistinguishable from the buffering problems it would be masking.
+    // 30 MHz divides cleanly from the 150 MHz peripheral clock.
     let mut spi_cfg = SpiConfig::default();
-    spi_cfg.frequency = 50_000_000;
+    spi_cfg.frequency = 30_000_000;
 
     let spi = Spi::new(
         p.SPI0, p.PIN_18, // SCK
@@ -213,9 +219,13 @@ async fn main(spawner: Spawner) {
     // Create SPI device with delay for proper CS timing
     let spi_device = ExclusiveDevice::new(spi, cs, Delay).unwrap();
 
-    // W5500 state - 8 sockets for RX/TX
-    static STATE: StaticCell<embassy_net_wiznet::State<8, 8>> = StaticCell::new();
-    let state = STATE.init(embassy_net_wiznet::State::<8, 8>::new());
+    // W5500 driver ring: 16 receive slots, 8 transmit.
+    //
+    // Receive is where the burst pressure is — a console sends every universe
+    // of a frame back to back, so the driver has to stage a dozen or more
+    // frames before the stack gets a chance to hand them to the socket.
+    static STATE: StaticCell<embassy_net_wiznet::State<16, 8>> = StaticCell::new();
+    let state = STATE.init(embassy_net_wiznet::State::<16, 8>::new());
 
     // Create W5500 device and runner
     let (device, runner) = match embassy_net_wiznet::new(
